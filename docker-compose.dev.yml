@@ -1,0 +1,33 @@
+# 開発用: PostgreSQL + PGroonga（本番は Patroni）、ScalaS3（S3互換ストレージ）、
+# Mailpit（送信メールを受け止めるだけの SMTP。http://localhost:8026 で中身を見られる）
+# skiwi の開発環境と同時に動かせるよう、ポートをずらしている
+name: skea
+services:
+  db:
+    image: groonga/pgroonga:4.1.0-alpine-17-slim
+    environment:
+      POSTGRES_USER: skea
+      POSTGRES_PASSWORD: skea
+      POSTGRES_DB: skea
+    ports: ["54339:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./deploy/docker/dev-initdb.sql:/docker-entrypoint-initdb.d/10-skea-test.sql:ro   # テスト用DB skea_test
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "skea"]
+      interval: 2s
+      retries: 30
+  s3:
+    build: { context: ./deploy/docker, dockerfile: scalas3.Dockerfile }   # 初回はソースからビルドする
+    image: skea-scalas3:dev
+    environment:
+      SCALAS3_ACCESS_KEY: skea
+      SCALAS3_SECRET_KEY: skeaskeaskeaskea
+    ports: ["3910:3900"]
+    volumes: ["s3data:/var/lib/scalas3/data"]
+  mail:
+    image: axllent/mailpit:v1.27
+    ports: ["1026:1025", "8026:8025"]
+volumes:
+  pgdata:
+  s3data:

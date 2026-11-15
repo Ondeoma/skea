@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" width="160" height="160" role="img" aria-label="skea">
+  <rect width="160" height="160" rx="36" fill="#FFF4D6"/>
+  <path d="M80 31q-12-13-4-27q14 7 4 27z" fill="#5E7F2E"/>
+  <path d="M80 31q13-10 21-4q-8 12-21 4z" fill="#86A83E"/>
+  <circle cx="80" cy="80" r="50" fill="#6F8F35"/>
+  <circle cx="66" cy="60" r="5" fill="#1F2A10"/><circle cx="67.5" cy="58.5" r="1.6" fill="#fff"/>
+  <circle cx="94" cy="60" r="5" fill="#1F2A10"/><circle cx="95.5" cy="58.5" r="1.6" fill="#fff"/>
+  <ellipse cx="55" cy="73" rx="7" ry="4" fill="#F4A3A3"/><ellipse cx="105" cy="73" rx="7" ry="4" fill="#F4A3A3"/>
+  <rect x="34" y="84" width="92" height="64" rx="7" fill="#fff" stroke="#D9CBB0" stroke-width="1.5"/>
+  <path d="M64.7 92v48M95.3 92v48" stroke="#EADFCB" stroke-width="1.5"/>
+  <g fill="#DE3423"><rect x="40" y="94" width="19" height="9" rx="2"/><rect x="40" y="107" width="19" height="9" rx="2"/></g>
+  <rect x="71" y="94" width="19" height="9" rx="2" fill="#E8742A"/>
+  <g fill="#7BB33A"><rect x="101" y="94" width="19" height="9" rx="2"/><rect x="101" y="107" width="19" height="9" rx="2"/><rect x="101" y="120" width="19" height="9" rx="2"/></g>
+  <path d="M72 64q8-7 16 0q6 12-4 24q-1-10-12-15z" fill="#4E545C"/>
+  <ellipse cx="45" cy="86" rx="9" ry="6" fill="#E8742A"/><ellipse cx="115" cy="86" rx="9" ry="6" fill="#E8742A"/>
+</svg>
