@@ -13,6 +13,13 @@ case class State(board: RV[Option[BoardDto]] = RV(None),
                  q: RV[String] = RV(""),
                  who: RV[String] = RV(""),
                  label: RV[String] = RV(""),
+                 priority: RV[String] = RV(""),
+                 taskType: RV[String] = RV(""),
+                 due: RV[String] = RV(""),
+                 saved: RV[List[BoardFilterDto]] = RV(Nil),
+                 saving: RV[Boolean] = RV(false),
+                 saveName: RV[String] = RV(""),
+                 saveShared: RV[Boolean] = RV(false),
                  opened: RV[Option[String]] = RV(None),
                  laneBy: RV[String] = RV(Prefs.get("board.lanes", "")),
                  folded: RV[Set[String]] = RV(Set.empty),
@@ -23,9 +30,12 @@ def initState() = State()
 
 def load(s: State): Unit = Store.meta.v.foreach(m => Api.board(m.project.id).foreach(b => s.board := Some(b)))
 
+def loadSaved(s: State): Unit = Store.meta.v.foreach(m => Api.get[List[BoardFilterDto]](s"/api/projects/${m.project.id}/board-filters").foreach(s.saved := _))
+
 def mounted(s: State): Unit = {
   pageTitle("ボード")
   load(s)
+  loadSaved(s)
   watch(Store.tick, false)((_, _) => load(s))
 }
 
@@ -42,8 +52,58 @@ private def visible(s: State, t: TaskDto): Boolean = {
     case "me"   => t.assignee.exists(a => Store.myId.contains(a.id))
     case id     => t.assignee.exists(_.id.toString == id)
   }) &&
-  (s.label.v.isEmpty || t.labelIds.exists(_.toString == s.label.v))
+  (s.label.v.isEmpty || t.labelIds.exists(_.toString == s.label.v)) &&
+  (s.priority.v.isEmpty || t.priority == s.priority.v) &&
+  (s.taskType.v.isEmpty || t.taskType == s.taskType.v) &&
+  dueOk(s.due.v, t)
 }
+
+/** 期日の条件（期限切れ・今日まで・7日以内は、完了したタスクを除く）. */
+private def dueOk(due: String, t: TaskDto): Boolean = {
+  val today = Fmt.today()
+  def open = !Store.meta.v.exists(_.statuses.exists(st => st.id == t.statusId && st.category == StatusCategory.Done))
+  due match {
+    case "overdue" => t.dueDate.exists(_ < today) && open
+    case "today"   => t.dueDate.exists(_ <= today) && open
+    case "week"    => t.dueDate.exists(_ <= Fmt.addDays(today, 7)) && open
+    case "none"    => t.dueDate.isEmpty
+    case _         => true
+  }
+}
+
+// ---------------------------------------------------------------- 絞り込み条件の保存と呼び出し
+
+def cond(s: State) = computed { BoardCond(s.q.v.trim, s.who.v, s.label.v, s.priority.v, s.taskType.v, s.due.v) }
+def hasCond(s: State) = cond(s).mapC(!_.isEmpty)
+
+def applyCond(s: State, c: BoardCond): Unit = {
+  s.q := c.q; s.who := c.who; s.label := c.label; s.priority := c.priority; s.taskType := c.taskType; s.due := c.due
+}
+
+/** 保存した条件のボタン（押すと呼び出す. 呼び出し中にもう一度押すと解除）. */
+def pick(s: State, f: BoardFilterDto): Unit = applyCond(s, if (cond(s).v == f.cond) BoardCond() else f.cond)
+def savedClass(s: State, f: BoardFilterDto) = cond(s).mapC(c => if (c == f.cond) "chip active" else "chip")
+def canRemove(f: BoardFilterDto) = Store.isProjectAdmin.mapC(a => f.mine || a)
+
+def startSave(s: State): Unit = { s.saveName := ""; s.saveShared := false; s.saving := true }
+
+def save(s: State): Unit = Store.meta.v.foreach { m =>
+  val name = s.saveName.v.trim
+  if (name.nonEmpty)
+    Store.report(Api.post[BoardFilterDto](s"/api/projects/${m.project.id}/board-filters", BoardFilterReq(name, cond(s).v, s.saveShared.v).asJson)) { _ =>
+      s.saving := false
+      loadSaved(s)
+    }
+}
+
+def removeSaved(s: State, f: BoardFilterDto): Unit =
+  Dialog.confirm(s"保存した条件「${f.name}」を削除しますか？" + (if (f.shared) "（プロジェクトの全員から消えます）" else ""), "削除する") {
+    Store.report(Api.delete(s"/api/board-filters/${f.id}"))(_ => loadSaved(s))
+  }
+
+def clear(s: State): Unit = applyCond(s, BoardCond())
+
+val dueOpts: List[Opt] = Opt.of(BoardCond.dues)
 
 // ---------------------------------------------------------------- スイムレーン（担当者・ラベルごとの横の区切り）
 
@@ -160,6 +220,13 @@ def backlogLink: String = Store.meta.v.map(m => "/p/" + m.project.key + "/backlo
       <span class="grow"></span>
       <button v-if="Store.canEdit" class="small" @click="s.completing := true">スプリントを完了</button>
     </div>
+    <div v-if="s.saved.mapC(_.nonEmpty)" class="saved">
+      <span class="muted small">保存した条件</span>
+      <span v-for="f in s.saved" :key="f.id" class="saved-item">
+        <button :class="savedClass(s, f)" :title='if (f.shared) "プロジェクトで共有" else "自分用"' @click="pick(s, f)">{{ if (f.shared) "👥 " else "" }}{{ f.name }}</button>
+        <button v-if="canRemove(f)" class="ghost x" title="削除" @click="removeSaved(s, f)">×</button>
+      </span>
+    </div>
     <div class="filters">
       <input type="search" v-model="s.q" placeholder="絞り込み" class="fq">
       <div class="avatars">
@@ -171,7 +238,12 @@ def backlogLink: String = Store.meta.v.map(m => "/p/" + m.project.key + "/backlo
         <button :class='whoClass(s, "none")' @click='s.who := "none"'>未割り当て</button>
       </div>
       <Combo :bind="Some(s.label)" :live="Some(labels.mapC(_.map(l => Opt(l.id.toString, l.name, color = l.color))))" clearLabel="すべてのラベル" :small="true" />
+      <Combo :bind="Some(s.priority)" :options="Opt.priorities" clearLabel="すべての優先度" :small="true" />
+      <Combo :bind="Some(s.taskType)" :options="Opt.types" clearLabel="すべての種類" :small="true" />
+      <Combo :bind="Some(s.due)" :options="dueOpts" clearLabel="期日を問わない" :small="true" />
       <Combo :options="laneOpts" :value="s.laneBy.v" :small="true" :onChange="v => setLanes(s, v)" />
+      <button v-if="hasCond(s)" class="ghost small" @click="clear(s)">条件を解除</button>
+      <button v-if="hasCond(s)" class="small" @click="startSave(s)">条件を保存</button>
     </div>
     <div v-if="noSprint(s)" class="empty card">
       <p>進行中のスプリントはありません。</p>
@@ -205,6 +277,18 @@ def backlogLink: String = Store.meta.v.map(m => "/p/" + m.project.key + "/backlo
  <Modal v-for="k in s.opened.mapC(_.toList)" :key="k" :xwide="true" :onClose="_ => closeTask(s)">
       <TaskView :taskKey="k" :modal="true" :onClose="_ => closeTask(s)" />
     </Modal>
+    <Modal v-if="s.saving" :onClose="_ => s.saving := false">
+      <form @submit.prevent="save(s)">
+        <h2>絞り込み条件を保存</h2>
+        <label class="field"><span>名前</span><input type="text" v-model="s.saveName" maxlength="50" placeholder="自分の今週のバグ" autofocus></label>
+        <label v-if="Store.canEdit" class="small"><input type="checkbox" v-model="s.saveShared"> プロジェクトで共有する（外すと自分だけに表示）</label>
+        <p class="muted small">ボードの上にボタンとして並び、押すと同じ条件で絞り込めます。</p>
+        <div class="actions">
+          <button type="button" @click="s.saving := false">キャンセル</button>
+          <button type="submit" class="primary">保存</button>
+        </div>
+      </form>
+    </Modal>
     <Modal v-if="s.completing" :onClose="_ => s.completing := false">
       <h2>スプリントを完了</h2>
           <p>完了していないタスクの移動先を選んでください。</p>
@@ -222,6 +306,9 @@ def backlogLink: String = Store.meta.v.map(m => "/p/" + m.project.key + "/backlo
 .sprint-bar { display: flex; align-items: center; gap: .6rem; margin-bottom: .7rem; }
 .filters { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; margin-bottom: .8rem; }
 .fq { width: 200px; }
+.saved { display: flex; gap: .35rem; align-items: center; flex-wrap: wrap; margin-bottom: .5rem; }
+.saved-item { display: inline-flex; align-items: center; }
+.x { padding: 0 .3rem; font-size: .9rem; }
 .avatars { display: flex; gap: .25rem; align-items: center; flex-wrap: wrap; }
 .av { border: 2px solid transparent; border-radius: 50%; padding: 0; background: none; }
 .av.active { border-color: var(--accent); }

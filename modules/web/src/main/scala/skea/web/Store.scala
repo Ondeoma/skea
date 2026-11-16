@@ -232,6 +232,13 @@ object Fmt {
     isoDate(dt)
   }
 
+  /** 外部の URL を href に入れるときの確認（http(s) 以外は無効にする）. */
+  def href(u: String): String = { val t = u.trim; if (t.toLowerCase.startsWith("https://") || t.toLowerCase.startsWith("http://")) t else "#" }
+
+  /** from から to まで何日か（yyyy-MM-dd. to が前なら負）. */
+  def daysBetween(from: String, to: String): Int =
+    math.round((new js.Date(to + "T00:00:00").getTime() - new js.Date(from + "T00:00:00").getTime()) / 86400000).toInt
+
   def isOverdue(due: Option[String], done: Boolean): Boolean = !done && due.exists(_ < today())
 
   def initials(name: String): String = name.trim.take(1)

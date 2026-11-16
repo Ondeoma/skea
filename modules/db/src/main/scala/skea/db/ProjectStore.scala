@@ -357,9 +357,13 @@ final class ProjectStore(xa: Transactor[IO]) extends TxStore(xa):
   def completeSprint(projectId: UUID, id: UUID, moveTo: Option[UUID]): IO[Either[StoreError, Int]] = tx(
     sql"update sprint set state = 'closed', completed_at = now() where id = $id and project_id = $projectId and state = 'active'".update.run.flatMap { n =>
       if n == 0 then fail(StoreError.Invalid("完了できるのは進行中のスプリントだけです"))
-      else
+      else moveTo.filter(_ != id).traverse(m =>
+        sql"select exists(select 1 from sprint where id = $m and project_id = $projectId and state <> 'closed')".query[Boolean].unique).flatMap {
+        case Some(false) => fail[Int](StoreError.Invalid("移動先のスプリントが見つかりません"))
+        case _ =>
         sql"""update task t set sprint_id = $moveTo, updated_at = now() from status s
               where s.id = t.status_id and t.sprint_id = $id and s.category <> 'done' and t.deleted_at is null""".update.run.map(_.asRight)
+      }
     }
   )
 

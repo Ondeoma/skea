@@ -23,7 +23,8 @@ final class TemplateService(templates: TemplateStore, projects: ProjectStore, sv
     val sprint = if activeSprint then projects.sprints(projectId, includeClosed = false).map(_.find(_.state == "active").map(_.id)) else IO.pure(None)
     sprint.flatMap { sp =>
       val req = CreateTaskReq(title = title, description = tpl.description, statusId = tpl.statusId, sprintId = sp, assigneeId = tpl.assigneeId,
-        dueDate = tpl.dueInDays.map(d => date.plusDays(d.toLong).toString), labelIds = tpl.labelIds, fields = tpl.fields)
+        dueDate = tpl.dueInDays.map(d => date.plusDays(d.toLong).toString), labelIds = tpl.labelIds, fields = tpl.fields, priority = tpl.priority,
+        taskType = tpl.taskType)
       svc.create(op, projectId, req).flatMap {
         case Left(f) => IO.pure(Left(f))
         case Right(t) =>
@@ -49,7 +50,7 @@ final class TemplateService(templates: TemplateStore, projects: ProjectStore, sv
     templates.dueRecurring(now).flatMap(_.traverse_ { r =>
       val next = nextRun(r.frequency, r.weekday, r.monthday, now)
       (templates.template(r.templateId), r.createdBy.flatTraverse(u => sessions.sessionFor(u))).tupled.flatMap {
-        case (Some((tpl, _)), Some(s)) =>
+        case (Some((tpl, TemplateOwner.Project(_))), Some(s)) =>
           instantiate(Op(s), tpl, r.projectId, now, r.activeSprint).flatMap {
             case Right(t) => templates.markRun(r.id, r.nextRun, next, Some(t.key)).void
             case Left(f)  => IO.println(s"[skea] recurring task ${r.id} failed: ${f.message}") *> templates.markRun(r.id, r.nextRun, next, None).void
@@ -145,16 +146,22 @@ final class ImportService(projects: ProjectStore, users: UserStore, svc: TaskSer
 final class TemplateRoutes(templates: TemplateStore, svc: TemplateService, imports: ImportService, val sessions: SessionAuth, val access: Access2)
     extends RouteSupport:
 
-  private def withTemplate(req: Request[IO], id: UUID, need: Role)(f: (AuthSession, TemplateDto, UUID) => IO[Response[IO]]) =
+  /** テンプレートを操作する（プロジェクトのものはプロジェクトの権限、個人のものは本人だけ）。 */
+  private def withTemplate(req: Request[IO], id: UUID, need: Role)(f: (AuthSession, TemplateDto, TemplateOwner) => IO[Response[IO]]) =
     authed(req)(s => templates.template(id).flatMap {
-      case None => err(Status.NotFound, "テンプレートが見つかりません")
-      case Some((t, pid)) => respond(access.project(s, pid, need))(_ => f(s, t, pid))
+      case Some((t, o @ TemplateOwner.Project(pid))) => respond(access.project(s, pid, need))(_ => f(s, t, o))
+      case Some((t, o @ TemplateOwner.User(uid))) if uid == s.user.id => f(s, t, o)
+      case _ => err(Status.NotFound, "テンプレートが見つかりません")
     })
 
   private def templateOk(r: TemplateReq): Option[String] =
     if r.name.trim.isEmpty || r.title.trim.isEmpty then Some("名前とタイトルを入力してください")
     else if r.dueInDays.exists(d => d < 0 || d > 3650) then Some("期日は 0〜3650 日後で指定してください")
-    else if r.subtasks.size > 50 then Some("サブタスクは 50 件までです")
+    else if r.name.length > 100 || r.title.length > 500 then Some("名前は 100 文字、タイトルは 500 文字までです")
+    else if r.subtasks.size > 50 || r.subtasks.exists(_.length > 500) then Some("サブタスクは 50 件（1件 500 文字）までです")
+    else if r.description.exists(d => !RichText.valid(d)) then Some("説明の形式が正しくありません")
+    else if r.priority.exists(Priority.parse(_).isEmpty) then Some("優先度が正しくありません")
+    else if r.taskType.exists(TaskType.parse(_).isEmpty) then Some("種類が正しくありません")
     else None
 
   private def withRecurring(req: Request[IO], id: UUID)(f: (AuthSession, RecurringRow) => IO[Response[IO]]) =
@@ -178,21 +185,35 @@ final class TemplateRoutes(templates: TemplateStore, svc: TemplateService, impor
     case req @ POST -> Root / "api" / "projects" / UuidVar(pid) / "templates" =>
       withProject(req, pid, Role.Edit)((s, _) => body[TemplateReq](req)(r => templateOk(r) match
         case Some(m) => err(Status.BadRequest, m)
-        case None => templates.createTemplate(pid, r, s.user.id).orFail.flatMap(_.fold(fail, id =>
+        case None => templates.createTemplate(TemplateOwner.Project(pid), r, s.user.id).orFail.flatMap(_.fold(fail, id =>
+            templates.template(id).flatMap(t => Created(t.map(_._1)))))))
+
+    case req @ GET -> Root / "api" / "me" / "templates" =>
+      authed(req)(s => templates.personalTemplates(s.user.id).flatMap(Ok(_)))
+
+    case req @ POST -> Root / "api" / "me" / "templates" =>
+      authed(req)(s => body[TemplateReq](req)(r => templateOk(r) match
+        case Some(m) => err(Status.BadRequest, m)
+        case None => templates.createTemplate(TemplateOwner.User(s.user.id), r, s.user.id).orFail.flatMap(_.fold(fail, id =>
             templates.template(id).flatMap(t => Created(t.map(_._1)))))))
 
     case req @ PUT -> Root / "api" / "templates" / UuidVar(id) =>
-      withTemplate(req, id, Role.Edit)((_, _, _) => body[TemplateReq](req)(r => templateOk(r) match
+      withTemplate(req, id, Role.Edit)((_, _, o) => body[TemplateReq](req)(r => templateOk(r) match
         case Some(m) => err(Status.BadRequest, m)
-        case None => templates.updateTemplate(id, r).orFail.flatMap(_.fold(fail, _ => NoContent()))))
+        case None => templates.updateTemplate(id, o, r).orFail.flatMap(_.fold(fail, _ => NoContent()))))
 
     case req @ DELETE -> Root / "api" / "templates" / UuidVar(id) =>
       withTemplate(req, id, Role.Edit)((_, _, _) => templates.deleteTemplate(id) *> NoContent())
 
-    /** テンプレートからタスクを作る（サブタスクも）。 */
+    /** テンプレートからタスクを作る（サブタスクも）。個人のテンプレートは projectId で作る先を指定する。 */
     case req @ POST -> Root / "api" / "templates" / UuidVar(id) / "tasks" =>
-      withTemplate(req, id, Role.Edit)((s, t, pid) =>
-        respond(svc.instantiate(Op(s), t, pid, svc.today, param(req, "activeSprint").contains("true")))(Created(_)))
+      withTemplate(req, id, Role.Edit)((s, t, o) =>
+        val target = o match
+          case TemplateOwner.Project(pid) => IO.pure(Right(pid))
+          case TemplateOwner.User(_) => param(req, "projectId").flatMap(uuidOpt) match
+              case Some(pid) => access.project(s, pid, Role.Edit).map(_.as(pid))
+              case None      => IO.pure(Left(Fail.Invalid("作成先のプロジェクトを指定してください")))
+        respond(target)(pid => respond(svc.instantiate(Op(s), t, pid, svc.today, param(req, "activeSprint").contains("true")))(Created(_))))
 
     // ---------------------------------------------------------------- 繰り返しタスク
     case req @ GET -> Root / "api" / "projects" / UuidVar(pid) / "recurring" =>
@@ -203,7 +224,7 @@ final class TemplateRoutes(templates: TemplateStore, svc: TemplateService, impor
         (svc.validate(r), firstRun(r)).tupled match
           case Left(m) => err(Status.BadRequest, m)
           case Right((_, first)) => templates.template(r.templateId).flatMap {
-              case Some((_, tp)) if tp == pid => templates.createRecurring(pid, r, first, s.user.id) *> templates.recurring(pid).flatMap(Created(_))
+              case Some((_, TemplateOwner.Project(tp))) if tp == pid => templates.createRecurring(pid, r, first, s.user.id) *> templates.recurring(pid).flatMap(Created(_))
               case _ => err(Status.BadRequest, "テンプレートが見つかりません")
             }))
 
@@ -214,7 +235,12 @@ final class TemplateRoutes(templates: TemplateStore, svc: TemplateService, impor
           case Right((_, first)) =>
             // 頻度・曜日・日を変えなければ、次に作る日はそのまま
             val same = old.frequency == r.frequency && old.weekday == r.weekday && old.monthday == r.monthday && r.startDate.forall(_.isEmpty)
-            templates.updateRecurring(id, r, if same then old.nextRun else first) *> NoContent()))
+            // テンプレートは同じプロジェクトのものだけ（ほかのプロジェクトのテンプレートを使わせない）
+            templates.template(r.templateId).flatMap {
+              case Some((_, TemplateOwner.Project(tp))) if tp == old.projectId =>
+                templates.updateRecurring(id, r, if same then old.nextRun else first) *> NoContent()
+              case _ => err(Status.BadRequest, "テンプレートが見つかりません")
+            }))
 
     case req @ DELETE -> Root / "api" / "recurring" / UuidVar(id) =>
       withRecurring(req, id)((_, _) => templates.deleteRecurring(id) *> NoContent())

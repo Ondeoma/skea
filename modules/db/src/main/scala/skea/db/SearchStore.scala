@@ -5,6 +5,9 @@ import cats.syntax.all.*
 import doobie.*
 import doobie.implicits.*
 import doobie.postgres.implicits.*
+import doobie.postgres.circe.jsonb.implicits.*
+import io.circe.Json
+import io.circe.syntax.*
 import skea.core.*
 import skea.core.SearchQuery.{Filter, Op}
 import skea.shared.*
@@ -204,7 +207,7 @@ final class SearchStore(xa: Transactor[IO], tasks: TaskStore) extends TxStore(xa
             else List.empty.pure[ConnectionIO]
         yield (exact.map(r => (r._1, r._2, r._3, false)) ++ fuzzy.map(r => (r._1, r._2, r._3, true)), total + fuzzy.headOption.map(_._4.toInt).getOrElse(0))
         tx(prog).attempt.flatMap {
-          case Left(e) => IO.pure(Left(s"検索できませんでした: ${e.getMessage.take(200)}"))
+          case Left(e) => IO.println(s"[skea] search failed: ${e.getMessage}").as(Left("検索できませんでした。条件を見直してください"))
           case Right((rows, total)) =>
             tasks.dtos(rows.map(_._1)).map { ds =>
               val m = ds.map(d => d.id -> d).toMap
@@ -224,3 +227,29 @@ final class SearchStore(xa: Transactor[IO], tasks: TaskStore) extends TxStore(xa
   }
 
   def deleteFilter(userId: UUID, id: UUID): IO[Unit] = tx(sql"delete from saved_filter where id = $id and user_id = $userId".update.run.void)
+
+  // ---------------------------------------------------------------- ボードの絞り込み条件
+
+  /** プロジェクトで共有しているものと、自分のもの（共有を先に、名前の順）。 */
+  def boardFilters(projectId: UUID, userId: UUID): IO[List[BoardFilterDto]] = tx(
+    sql"""select id, name, cond, user_id is null, created_by = $userId from board_filter
+          where project_id = $projectId and (user_id is null or user_id = $userId) order by user_id is not null, name"""
+      .query[(UUID, String, Json, Boolean, Option[Boolean])].to[List]
+  ).map(_.map((id, n, c, sh, mine) => BoardFilterDto(id, n, c.as[BoardCond].getOrElse(BoardCond()), sh, mine.getOrElse(false) || !sh)))
+
+  /** 1件（プロジェクト・持ち主（共有なら None）・作った人）。 */
+  def boardFilter(id: UUID): IO[Option[(UUID, Option[UUID], Option[UUID])]] =
+    tx(sql"select project_id, user_id, created_by from board_filter where id = $id".query[(UUID, Option[UUID], Option[UUID])].option)
+
+  def saveBoardFilter(projectId: UUID, userId: UUID, r: BoardFilterReq): IO[Either[StoreError, BoardFilterDto]] = tx {
+    val id = UUID.randomUUID()
+    val owner = Option.unless(r.shared)(userId)
+    sql"""insert into board_filter (id, project_id, user_id, name, cond, created_by)
+          values ($id, $projectId, $owner, ${r.name.trim}, ${r.cond.asJson}, $userId)""".update.run
+      .as(BoardFilterDto(id, r.name.trim, r.cond, r.shared, true)).attemptSqlState.map(_.left.map {
+        case s if s.value == "23505" => StoreError.Conflict("同じ名前の条件があります")
+        case s                       => StoreError.Invalid(s"保存できませんでした（${s.value}）")
+      })
+  }
+
+  def deleteBoardFilter(id: UUID): IO[Unit] = tx(sql"delete from board_filter where id = $id".update.run.void)

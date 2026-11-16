@@ -166,12 +166,11 @@ def bulkAssignee(s: State, props: Props): Unit = if (s.bulkAssignee.v.nonEmpty) 
 
 /** 表示中の結果を CSV（Excel で開けるよう BOM 付き）で保存する. */
 def csv(s: State): Unit = {
-  def q(v: String) = "\"" + v.replace("\"", "\"\"") + "\""
-  val head = List("ID", "種類", "タイトル", "ステータス", "優先度", "担当者", "報告者", "開始日", "期日", "作業時間(分)", "更新").map(q).mkString(",")
+  val head = List("ID", "種類", "タイトル", "ステータス", "優先度", "担当者", "報告者", "開始日", "期日", "作業時間(分)", "更新").map(Csv.cell).mkString(",")
   val rows = s.result.v.toList.flatMap(_.hits).map { h =>
     val t = h.task
     List(t.key, TaskType.label(t.taskType), t.title, s.statuses.v.get(t.statusId).map(_._1).getOrElse(""), Priority.label(t.priority), t.assignee.map(_.name).getOrElse(""), t.reporter.map(_.name).getOrElse(""), t.startDate.getOrElse(""),
-      t.dueDate.getOrElse(""), t.spentMinutes.toString, Fmt.dateTime(t.updatedAt)).map(q).mkString(",")
+      t.dueDate.getOrElse(""), t.spentMinutes.toString, Fmt.dateTime(t.updatedAt)).map(Csv.cell).mkString(",")
   }
   val blob = new dom.Blob(js.Array[dom.BlobPart]("﻿" + (head :: rows).mkString("\r\n")), new dom.BlobPropertyBag { `type` = "text/csv" })
   val a = dom.document.createElement("a").asInstanceOf[dom.HTMLAnchorElement]

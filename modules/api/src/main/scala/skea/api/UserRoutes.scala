@@ -30,6 +30,10 @@ final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, activity: Act
     val r = Response[IO](Status.Found).putHeaders(Location(Uri.unsafeFromString(to)))
     IO.pure(cookie.fold(r)(r.addCookie))
 
+  private val StateCookie = "skea_login_state"
+  private def stateCookie(v: String, maxAge: Long): ResponseCookie =
+    ResponseCookie(StateCookie, v, maxAge = Some(maxAge), path = Some("/auth"), httpOnly = true, secure = cfg.cookieSecure, sameSite = Some(SameSite.Lax))
+
   private def loggedIn(u: User, via: String): IO[ResponseCookie] =
     sessions.issue(u).flatTap(_ => activity.audit(Some(u.id), via, "auth.login", None, Json.obj()))
 
@@ -39,12 +43,16 @@ final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, activity: Act
       oidc match
         case Some(o) =>
           val state = Crypto.randomToken(); val verifier = Crypto.randomToken(48); val nonce = Crypto.randomToken()
-          users.saveLoginState(state, verifier, nonce, back) *> o.authorizationUri(state, verifier, nonce).flatMap(u => redirect(u.renderString))
+          // state をこのブラウザの Cookie にも入れ、戻ってきたときに照合する（ほかの人が始めたログインに乗せられないように）
+          users.saveLoginState(state, verifier, nonce, back) *> o.authorizationUri(state, verifier, nonce).flatMap(u =>
+            redirect(u.renderString, Some(stateCookie(state, 600))))
         case None if cfg.devLogin => redirect(s"/login?returnTo=${java.net.URLEncoder.encode(back, "UTF-8")}")
         case None                 => err(Status.ServiceUnavailable, "OIDC が設定されていません")
 
     case req @ GET -> Root / "auth" / "callback" =>
       (oidc, param(req, "code"), param(req, "state")) match
+        case (Some(_), Some(_), Some(state)) if !req.cookies.find(_.name == StateCookie).exists(c => Crypto.constantTimeEquals(c.content, state)) =>
+          err(Status.BadRequest, "ログインの有効期限が切れました。もう一度ログインしてください")
         case (Some(o), Some(code), Some(state)) =>
           users.takeLoginState(state).flatMap {
             case None => err(Status.BadRequest, "ログインの有効期限が切れました。もう一度ログインしてください")
@@ -52,12 +60,13 @@ final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, activity: Act
               o.authenticate(code, verifier, nonce, Instant.now()).attempt.flatMap {
                 case Left(e) =>
                   activity.audit(None, "web", "auth.denied", None, Json.obj("error" -> e.getMessage.asJson)) *>
-                    err(Status.Unauthorized, s"ログインできませんでした: ${e.getMessage}")
+                    err(Status.Unauthorized, "ログインできませんでした。もう一度お試しください")
                 case Right(id) =>
                   for
                     u <- users.upsert(id.sub, id.name, id.email, id.picture)
                     r <- if u.disabled then err(Status.Forbidden, "このユーザーは無効にされています")
-                         else users.syncGroups(u.id, id.groups) *> loggedIn(u, "web").flatMap(c => redirect(back, Some(c)))
+                         else users.syncGroups(u.id, id.groups) *> loggedIn(u, "web").flatMap(c =>
+                           redirect(back, Some(c)).map(_.addCookie(stateCookie("", 0))))
                   yield r
               }
           }
@@ -68,7 +77,7 @@ final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, activity: Act
       sessions.revoke(req).flatMap(c => Ok(Json.obj("redirect" -> "/".asJson)).map(_.addCookie(c)))
 
     // 開発用: 名前だけでログインする（DEV_LOGIN=true のときだけ）
-    case req @ POST -> Root / "auth" / "dev-login" if cfg.devLogin =>
+    case req @ POST -> Root / "auth" / "dev-login" if cfg.devLogin && oidc.isEmpty =>
       body[Json](req) { j =>
         val c     = j.hcursor
         val name  = c.get[String]("name").getOrElse("").trim

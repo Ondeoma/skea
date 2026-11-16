@@ -158,8 +158,8 @@ class StoreSpec extends CatsEffectSuite:
       upd     <- tasks.update(pt.id, TaskChanges(priority = Some("lowest")))
       _        = assertEquals(upd.map(_.changes.map(_.field)), Right(List("priority")))
       store    = new TemplateStore(xaFixture())
-      id      <- store.createTemplate(pid, TemplateReq("定例", "定例 {{date}}", subtasks = List("議事録", " ")), u.id).map(_.toOption.get)
-      dup     <- store.createTemplate(pid, TemplateReq("定例", "別"), u.id)
+      id      <- store.createTemplate(TemplateOwner.Project(pid), TemplateReq("定例", "定例 {{date}}", subtasks = List("議事録", " ")), u.id).map(_.toOption.get)
+      dup     <- store.createTemplate(TemplateOwner.Project(pid), TemplateReq("定例", "別"), u.id)
       _        = assert(dup.isLeft, "同じ名前は作れない")
       tpl     <- store.template(id)
       _        = assertEquals(tpl.map(_._1.subtasks), Some(List("議事録")))
@@ -170,6 +170,15 @@ class StoreSpec extends CatsEffectSuite:
       ok      <- store.markRun(mine.head.id, LocalDate.of(2026, 11, 16), LocalDate.of(2026, 11, 23), Some("X-1"))
       again   <- store.markRun(mine.head.id, LocalDate.of(2026, 11, 16), LocalDate.of(2026, 11, 23), Some("X-1"))
       _        = assert(ok && !again, "同じ回は1度だけ進める")
+      // 個人のテンプレート（プロジェクトの値は持たない. 同じ名前でもプロジェクトのものとは別）
+      mineId  <- store.createTemplate(TemplateOwner.User(u.id), TemplateReq("定例", "自分用", statusId = Some(pt.statusId), priority = Some("high")), u.id)
+                   .map(_.toOption.get)
+      mineT   <- store.template(mineId)
+      _        = assertEquals(mineT.map(t => (t._1.personal, t._1.statusId, t._1.priority, t._2)), Some((true, None, Some("high"), TemplateOwner.User(u.id))))
+      dup2    <- store.createTemplate(TemplateOwner.User(u.id), TemplateReq("定例", "別"), u.id)
+      _        = assert(dup2.isLeft, "個人でも同じ名前は作れない")
+      ps      <- store.personalTemplates(u.id)
+      _        = assertEquals(ps.map(_.id), List(mineId))
     yield ()
   }
 

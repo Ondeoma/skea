@@ -31,8 +31,12 @@ final case class ApiConfig(
     linkServices: List[LinkService] = Nil
 )
 
-/** 貼られたリンクに名前を出すための接続先（skiwi・skawau）。相手に skea をクライアントとして登録しておく。 */
-final case class LinkService(provider: String, url: String, clientId: String, clientSecret: String)
+/**
+ * OAuth で連携する外部サービス（skiwi・skawau: リンクに名前を出す、stui: 通知を送る）。相手に skea をクライアントとして登録しておく。
+ * url は利用者のブラウザから見た URL（許可画面・貼られるリンク）、internalUrl はサーバーから呼ぶときの URL（省略時は url）。
+ */
+final case class LinkService(provider: String, url: String, clientId: String, clientSecret: String, internalUrl: Option[String] = None):
+  def server: String = internalUrl.getOrElse(url)
 
 /** 認可を求める外部のサービス（OAUTH_CLIENTS で登録する）。redirectUri は完全一致で照合する。 */
 final case class OAuthClient(id: String, secret: String, redirectUri: String, name: String)
@@ -88,6 +92,9 @@ final class SessionAuth(users: UserStore, cfg: ApiConfig):
           case None        => IO.pure(None)
           case Some(token) => users.findSession(Crypto.sha256(token), Instant.now()).map(_.map((u, gs) => AuthSession(u, gs, isAdmin(u, gs))))
 
+  def publicUrl: String = cfg.publicUrl
+  def devLogin: Boolean = cfg.devLogin
+
   /** 別のユーザーとしての権限確認用（通知の宛先・自動化の実行ユーザー）。無効なユーザーは None。 */
   def sessionFor(userId: UUID, via: AuthVia = AuthVia.Session): IO[Option[AuthSession]] =
     users.withGroups(userId).map(_.map((u, gs) => AuthSession(u, gs, isAdmin(u, gs), via)))
@@ -135,11 +142,30 @@ trait RouteSupport extends Http4sDsl[IO]:
   private val readOnlyPosts = Set("/api/tasks/lookup")
   private def readOnlyPost(req: Request[IO]): Boolean = req.method == Method.POST && readOnlyPosts.contains(req.pathInfo.renderString)
 
+  private val safeMethods = Set(Method.GET, Method.HEAD, Method.OPTIONS)
+
+  /** Cookie のセッションでの更新系の要求が、別のサイトから送られたものでないか（CSRF 対策）。
+    * ブラウザが付ける Origin（なければ Referer）が PUBLIC_URL と同じ origin であることを確かめる。開発中（DEV_LOGIN）は localhost も許す。 */
+  private def sameOrigin(req: Request[IO]): Boolean =
+    def origin(u: String): Option[String] =
+      Uri.fromString(u).toOption.flatMap(x => (x.scheme, x.authority).mapN((sc, a) => s"${sc.value.toString.toLowerCase}://${a.host.value.toLowerCase}${a.port.fold("")(":" + _)}"))
+    val mine = origin(sessions.publicUrl)
+    def ok(o: String): Boolean = origin(o).exists(x => mine.contains(x) ||
+      (sessions.devLogin && Uri.fromString(o).toOption.flatMap(_.host).exists(h => Set("localhost", "127.0.0.1").contains(h.value))))
+    req.headers.get(org.typelevel.ci.CIString("Origin")).map(_.head.value).filter(_ != "null") match
+      case Some(o) => ok(o)
+      case None => req.headers.get(org.typelevel.ci.CIString("Referer")).map(_.head.value) match
+          case Some(r) => ok(r)
+          // Origin も Referer もない: ブラウザ以外（curl など）。ブラウザが別サイトからと示していれば拒否する
+          case None => !req.headers.get(org.typelevel.ci.CIString("Sec-Fetch-Site")).exists(h => h.head.value == "cross-site" || h.head.value == "same-site")
+
   /** ログインしていなければ 401。更新系の要求を read スコープのキーで送ったら 403。 */
   protected def authed(req: Request[IO])(f: AuthSession => IO[Response[IO]]): IO[Response[IO]] =
     sessions.fromRequest(req).flatMap {
       case None => err(Status.Unauthorized, "ログインしてください")
-      case Some(s) if !s.canWrite && !Set(Method.GET, Method.HEAD, Method.OPTIONS).contains(req.method) && !readOnlyPost(req) =>
+      case Some(s) if s.isSession && !safeMethods.contains(req.method) && !sameOrigin(req) =>
+        err(Status.Forbidden, "別のサイトからの要求は受け付けません")
+      case Some(s) if !s.canWrite && !safeMethods.contains(req.method) && !readOnlyPost(req) =>
         err(Status.Forbidden, "このAPIキーは参照専用です（write スコープが必要です）")
       case Some(s) => f(s)
     }

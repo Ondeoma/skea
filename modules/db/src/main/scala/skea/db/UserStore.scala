@@ -60,7 +60,7 @@ final class UserStore(xa: Transactor[IO]) extends TxStore(xa):
   /** 一覧（管理画面・メンションの候補）。q で名前を絞る。 */
   def list(q: Option[String], includeDisabled: Boolean, limit: Int = 500): IO[List[UserDto]] = tx {
     val where = List(
-      q.filter(_.trim.nonEmpty).map(s => fr"(u.name &@~ ${SearchQuery.phrase(s.trim)} or u.name ilike ${"%" + s.trim + "%"} or u.email ilike ${"%" + s.trim + "%"})"),
+      q.filter(_.trim.nonEmpty).map(s => fr"(u.name &@~ ${SearchQuery.phrase(s.trim)} or u.name ilike ${"%" + s.trim + "%"} or lower(u.email) = ${s.trim.toLowerCase})"),
       Option.when(!includeDisabled)(fr"not u.disabled")
     ).flatten
     (fr"""select u.id, u.name, u.email, u.avatar_url, u.is_admin, u.disabled, u.last_login_at,
@@ -107,16 +107,21 @@ final class UserStore(xa: Transactor[IO]) extends TxStore(xa):
   // ---------------------------------------------------------------- 通知の設定
 
   def notifyPrefs(userId: UUID): IO[List[NotifyPrefDto]] = tx(
-    sql"select kind, email from notify_pref where user_id = $userId".query[(String, Boolean)].to[List]
+    sql"select kind, email, chat from notify_pref where user_id = $userId".query[(String, Boolean, Boolean)].to[List]
   ).map { rows =>
-    val m = rows.toMap
-    NotificationKind.all.map(k => NotifyPrefDto(k, m.getOrElse(k, true)))
+    val m = rows.map(r => r._1 -> r).toMap
+    NotificationKind.all.map(k => NotifyPrefDto(k, m.get(k).forall(_._2), m.get(k).forall(_._3)))
   }
+
+  /** その種類の通知をチャット（stui）にも送るか（止めていなければ送る）。 */
+  def chatWanted(userId: UUID, kind: String): IO[Boolean] = tx(
+    sql"select not exists(select 1 from notify_pref where user_id = $userId and kind = $kind and not chat)".query[Boolean].unique
+  )
 
   def setNotifyPrefs(userId: UUID, prefs: List[NotifyPrefDto]): IO[Unit] = tx(
     prefs.filter(p => NotificationKind.all.contains(p.kind)).traverse_(p =>
-      sql"""insert into notify_pref (user_id, kind, email) values ($userId, ${p.kind}, ${p.email})
-            on conflict (user_id, kind) do update set email = excluded.email""".update.run)
+      sql"""insert into notify_pref (user_id, kind, email, chat) values ($userId, ${p.kind}, ${p.email}, ${p.chat})
+            on conflict (user_id, kind) do update set email = excluded.email, chat = excluded.chat""".update.run)
   )
 
   // ---------------------------------------------------------------- セッション

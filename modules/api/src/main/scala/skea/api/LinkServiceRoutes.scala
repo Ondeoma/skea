@@ -17,9 +17,9 @@ import java.util.UUID
 import scala.concurrent.duration.*
 
 /**
- * 外部サービスのリンクに名前を出す連携（docs/skiwi-integration.md・docs/skawau-integration.md）。
+ * 外部サービスとの OAuth の連携（docs/skiwi-integration.md・docs/skawau-integration.md・docs/stui-integration.md）。
  * 各ユーザーが OAuth 2.0（認可コード + PKCE）で相手のサービスを許可し、skea は本人の権限で、貼られたリンク先の名前
- * （skiwi のページのタイトル・skawau のファイル名）を読む。トークンは APP_SECRET の鍵で暗号化して保存する。
+ * （skiwi のページのタイトル・skawau のファイル名）を読む。stui には通知を送る（ChatNotifier）。トークンは APP_SECRET の鍵で暗号化して保存する。
  */
 final class LinkServiceRoutes(store: IntegrationTokenStore, http: Client[IO], box: SecretBox, cache: LinkServiceRoutes.Cache,
     val sessions: SessionAuth, val access: Access2, cfg: ApiConfig)
@@ -38,8 +38,9 @@ final class LinkServiceRoutes(store: IntegrationTokenStore, http: Client[IO], bo
   /** 個人設定へ戻る（結果を integration=…&result=… に付ける）。 */
   private def done(p: String, returnTo: String, result: String): IO[Response[IO]] =
     // 同じサイトのパスだけ。開発中（DEV_LOGIN）は画面の開発サーバー（http://localhost:…）にも戻せる
-    val devOrigin = cfg.devLogin && (returnTo.startsWith("http://localhost:") || returnTo.startsWith("http://127.0.0.1:"))
-    val back = Option(returnTo).filter(p => (p.startsWith("/") && !p.startsWith("//")) || devOrigin).getOrElse("/settings")
+    val devOrigin = cfg.devLogin && Uri.fromString(returnTo).toOption.exists(u =>
+      u.scheme.exists(_.value.toString == "http") && u.authority.exists(a => a.userInfo.isEmpty && Set("localhost", "127.0.0.1").contains(a.host.value)))
+    val back = Option(returnTo).filter(p => (p.startsWith("/") && !p.startsWith("//") && !p.startsWith("/\\")) || devOrigin).getOrElse("/settings")
     redirect(back + (if back.contains("?") then "&" else "?") + s"integration=$p&result=$result")
 
   private def service(p: String): Option[LinkService] = cfg.linkServices.find(_.provider == p)
@@ -52,15 +53,14 @@ final class LinkServiceRoutes(store: IntegrationTokenStore, http: Client[IO], bo
   private def forget(uid: UUID, p: String): IO[Unit] = cache.update(_.filterNot(k => k._1._1 == p && k._1._2 == uid))
 
   /** 本人のトークンでリンク先の名前をまとめて読む（60秒キャッシュ。見られないものも「なし」として覚える）。トークンが失効していたら None。 */
-  private def lookup(c: LinkService, uid: UUID, token: String, ids: List[UUID]): IO[Option[List[LinkTitleDto]]] =
-    val kind = kinds(c.provider)
+  private def lookup(c: LinkService, kind: Lookup, uid: UUID, token: String, ids: List[UUID]): IO[Option[List[LinkTitleDto]]] =
     for
       now   <- IO.realTime.map(_.toMillis)
       known <- cache.get.map(m => ids.flatMap(id => m.get((c.provider, uid, id)).filter(_._1 > now).map(id -> _._2)).toMap)
       miss   = ids.filterNot(known.contains)
       fetched <- if miss.isEmpty then IO.pure(Some(Nil))
                  else
-                   val req = Request[IO](Method.POST, Uri.unsafeFromString(c.url + kind.lookupPath))
+                   val req = Request[IO](Method.POST, Uri.unsafeFromString(c.server + kind.path))
                      .withEntity(Json.obj("ids" -> miss.asJson))
                      .putHeaders(Authorization(Credentials.Token(AuthScheme.Bearer, token)), "Accept" -> "application/json")
                    http.run(req).use { r =>
@@ -88,7 +88,7 @@ final class LinkServiceRoutes(store: IntegrationTokenStore, http: Client[IO], bo
         val verifier = Crypto.randomToken(48)
         store.saveState(state, s.user.id, p, verifier, param(req, "returnTo").getOrElse("/settings"), Instant.now().plusSeconds(600)) *>
           redirect(Uri.unsafeFromString(s"${c.url}/oauth/authorize").withQueryParams(Map(
-            "response_type" -> "code", "client_id" -> c.clientId, "redirect_uri" -> callback(p), "scope" -> "read", "state" -> state,
+            "response_type" -> "code", "client_id" -> c.clientId, "redirect_uri" -> callback(p), "scope" -> kinds(p).scope, "state" -> state,
             "code_challenge" -> Crypto.pkceChallenge(verifier), "code_challenge_method" -> "S256")).renderString)
       })
 
@@ -104,7 +104,7 @@ final class LinkServiceRoutes(store: IntegrationTokenStore, http: Client[IO], bo
               case None => done(p, back, "error")
               case Some(code) =>
                 val form = UrlForm("grant_type" -> "authorization_code", "code" -> code, "redirect_uri" -> callback(p), "code_verifier" -> verifier)
-                http.run(Request[IO](Method.POST, Uri.unsafeFromString(s"${c.url}/oauth/token")).withEntity(form).putHeaders(basic(c)))
+                http.run(Request[IO](Method.POST, Uri.unsafeFromString(s"${c.server}/oauth/token")).withEntity(form).putHeaders(basic(c)))
                   .use(r => if r.status.isSuccess then r.as[Json].map(_.hcursor.get[String]("access_token").toOption) else IO.pure(None))
                   .timeout(15.seconds).handleError(_ => None).flatMap {
                     case Some(token) => store.saveToken(s.user.id, p, box.encrypt(token)) *> forget(s.user.id, p) *> done(p, back, "connected")
@@ -117,7 +117,7 @@ final class LinkServiceRoutes(store: IntegrationTokenStore, http: Client[IO], bo
     case req @ DELETE -> Root / "api" / "integrations" / p / "connection" if kinds.contains(p) =>
       sessionOnly(req)(s => withService(p) { c =>
         tokenOf(s.user.id, p).flatMap(_.traverse_ { t =>
-          http.run(Request[IO](Method.POST, Uri.unsafeFromString(s"${c.url}/oauth/revoke")).withEntity(UrlForm("token" -> t)).putHeaders(basic(c)))
+          http.run(Request[IO](Method.POST, Uri.unsafeFromString(s"${c.server}/oauth/revoke")).withEntity(UrlForm("token" -> t)).putHeaders(basic(c)))
             .use(_ => IO.unit).timeout(10.seconds).handleError(_ => ())
         }) *> store.deleteToken(s.user.id, p) *> forget(s.user.id, p) *> NoContent()
       })
@@ -127,13 +127,14 @@ final class LinkServiceRoutes(store: IntegrationTokenStore, http: Client[IO], bo
       authed(req)(s => body[LinkTitlesReq](req) { r =>
         val ids = r.ids.distinct
         if ids.size > 100 then err(Status.BadRequest, "ids は100件までです")
-        else service(p) match
-          case None => Ok(LinkTitlesDto(Nil, connected = false))
-          case Some(c) =>
+        else (service(p), kinds(p).lookup) match
+          case (None, _) => Ok(LinkTitlesDto(Nil, connected = false))
+          case (Some(_), None) => store.token(s.user.id, p).flatMap(t => Ok(LinkTitlesDto(Nil, connected = t.isDefined)))
+          case (Some(c), Some(lk)) =>
             tokenOf(s.user.id, p).flatMap {
               case None => Ok(LinkTitlesDto(Nil, connected = false))
               case Some(t) =>
-                lookup(c, s.user.id, t, ids).attempt.flatMap {
+                lookup(c, lk, s.user.id, t, ids).attempt.flatMap {
                   case Right(Some(ts)) => Ok(LinkTitlesDto(ts, connected = true))
                   // 相手でトークンが失効していたら連携を外す
                   case Right(None) => store.deleteToken(s.user.id, p) *> Ok(LinkTitlesDto(Nil, connected = false))
@@ -150,8 +151,11 @@ object LinkServiceRoutes:
 
   def newCache: IO[Cache] = Ref.of(Map.empty)
 
-  /** サービスごとの違い: 表示名、問い合わせの API、応答の配列の名前、1件の読み方。 */
-  final case class Kind(name: String, lookupPath: String, listKey: String, parse: Json => Option[LinkTitleDto])
+  /** リンク先の名前の問い合わせ: API、応答の配列の名前、1件の読み方。 */
+  final case class Lookup(path: String, listKey: String, parse: Json => Option[LinkTitleDto])
+
+  /** サービスごとの違い: 表示名、求めるスコープ、名前の問い合わせ（stui は通知を送るだけなので持たない）。 */
+  final case class Kind(name: String, scope: String, lookup: Option[Lookup])
 
   private def field[A: Decoder](j: Json, k: String): Option[A] = j.hcursor.get[A](k).toOption
 
@@ -182,9 +186,10 @@ object LinkServiceRoutes:
         case _                                                              => "📄"
 
   val kinds: Map[String, Kind] = Map(
-    "skiwi"  -> Kind("skiwi", "/api/pages/lookup", "pages", skiwiPage),
-    "skawau" -> Kind("skawau", "/api/files/lookup", "files", skawauFile)
+    "skiwi"  -> Kind("skiwi", "read", Some(Lookup("/api/pages/lookup", "pages", skiwiPage))),
+    "skawau" -> Kind("skawau", "read", Some(Lookup("/api/files/lookup", "files", skawauFile))),
+    "stui"   -> Kind("stui", "read write", None)
   )
 
   /** 環境変数を読む順。 */
-  val providers: List[String] = List("skiwi", "skawau")
+  val providers: List[String] = List("skiwi", "skawau", "stui")

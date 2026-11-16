@@ -51,13 +51,23 @@ def loadLinks(s: State): Unit = LinkTitles.load().foreach(s.links := _)
 def connect(p: String): Unit =
   dom.window.location.href = s"/api/integrations/$p/connect?returnTo=" + Api.enc(dom.window.location.origin + "/settings")
 
-def disconnect(s: State, l: LinkServiceDto): Unit = Dialog.confirm(s"${l.name} との連携をやめますか？（${what(l.provider)}が出なくなります）", "やめる") {
+def disconnect(s: State, l: LinkServiceDto): Unit = Dialog.confirm(s"${l.name} との連携をやめますか？（${lost(l.provider)}）", "やめる") {
   Store.report(Api.delete(s"/api/integrations/${l.provider}/connection")) { _ => Store.toast(s"${l.name} との連携をやめました"); loadLinks(s); loadKeys(s) }
 }
 
-/** 何の名前を出すか. */
-def what(p: String): String = if (p == "skawau") "ファイル・フォルダの名前" else "ページのタイトル"
-def target(p: String): String = if (p == "skawau") "ファイル・フォルダ" else "ページ"
+/** 連携すると何ができるか. stui は通知を送り、skiwi・skawau は貼ったリンクに名前を出す. */
+def isChat(l: LinkServiceDto): Boolean = l.provider == "stui"
+def describe(l: LinkServiceDto): String =
+  if (isChat(l)) s"連携すると、skea の通知（担当・メンション・コメント・期日など）を、${l.name} のボット「skea」からの DM でも受け取れます。"
+  else {
+    val (target, what) = if (l.provider == "skawau") ("ファイル・フォルダ", "ファイル・フォルダの名前") else ("ページ", "ページのタイトル")
+    s"連携すると、課題の説明・コメント・リンクに貼った ${l.name} の${target}に、あなたの ${l.name} の権限で${what}を表示します（あなたが見られないものは表示しません）。"
+  }
+def lost(p: String): String = p match {
+  case "stui"   => "通知が stui に届かなくなります"
+  case "skawau" => "ファイル・フォルダの名前が出なくなります"
+  case _        => "ページのタイトルが出なくなります"
+}
 
 /** アイコンの登録（正方形に切り取って 256px に縮めてから送る）. */
 def uploadAvatar(s: State, e: dom.Event): Unit = {
@@ -91,8 +101,9 @@ def saveProfile(s: State): Unit =
     Api.me().foreach(m => Store.me := Some(m))
   }
 
-def setPref(s: State, kind: String, on: Boolean): Unit = {
-  s.prefs := s.prefs.v.map(p => if (p.kind == kind) p.copy(email = on) else p)
+/** 通知の種類ごとの、メール（chat = false）・チャット（chat = true）の受け取り. */
+def setPref(s: State, kind: String, on: Boolean, chat: Boolean = false): Unit = {
+  s.prefs := s.prefs.v.map(p => if (p.kind != kind) p else if (chat) p.copy(chat = on) else p.copy(email = on))
   Store.report(Api.putUnit("/api/me/notify-prefs", s.prefs.v.asJson))(_ => ())
 }
 
@@ -114,6 +125,9 @@ def revoke(s: State, k: ApiKeyDto): Unit =
 def origin: String = dom.window.location.origin
 def mcpCommand(s: State) = s.created.mapC(k => s"claude mcp add --transport http skea $origin/mcp --header \"Authorization: Bearer ${k.getOrElse("<APIキー>")}\"")
 def projectNames(k: ApiKeyDto): String = k.projectIds.fold("すべて")(ids => Store.projects.v.filter(p => ids.contains(p.id)).map(_.key).mkString(", "))
+
+val personalNote: String = "自分だけが使うタスクのテンプレートです。どのプロジェクトのタスク作成画面でも選べます。" +
+  "プロジェクトごとの値（ステータス・担当者・ラベル・カスタムフィールド）を入れたいときは、プロジェクトの設定のテンプレートを使ってください。"
 </script>
 
 <template>
@@ -158,8 +172,7 @@ def projectNames(k: ApiKeyDto): String = k.projectIds.fold("すべて")(ids => S
 
     <section v-for="l in s.links" class="panel">
       <h2>{{ l.name }} 連携</h2>
-      <p class="muted small">連携すると、課題の説明・コメント・リンクに貼った {{ l.name }} の{{ target(l.provider) }}（<code>{{ l.url }}</code>）に、
-        あなたの {{ l.name }} の権限で{{ what(l.provider) }}を表示します（あなたが見られないものは表示しません）。</p>
+      <p class="muted small">{{ describe(l) }}（<code>{{ l.url }}</code>）</p>
       <div class="row">
         <span v-if="l.connected" class="badge cat-done">連携しています</span>
         <span v-else class="badge">連携していません</span>
@@ -167,6 +180,16 @@ def projectNames(k: ApiKeyDto): String = k.projectIds.fold("すべて")(ids => S
         <button v-if="l.connected" @click="disconnect(s, l)">連携をやめる</button>
         <button v-else class="primary" @click="connect(l.provider)">{{ l.name }} と連携する</button>
       </div>
+      <template v-if="isChat(l) && l.connected">
+        <p class="muted small">{{ l.name }} にも送る種類:</p>
+        <div class="chips">
+          <label v-for="p in s.prefs" class="chip"><input type="checkbox" :checked="p.chat" @change="setPref(s, p.kind, Dom.checked(event), true)"> {{ NotificationKind.label(p.kind) }}</label>
+        </div>
+      </template>
+    </section>
+
+    <section class="panel">
+      <TemplateList heading="自分用のテンプレート" :personal="true" :note="personalNote" />
     </section>
 
     <section class="panel">

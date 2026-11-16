@@ -98,8 +98,9 @@ object EventHub:
     val withTask = !Set(EventKind.SprintCreated, EventKind.SprintStarted, EventKind.SprintCompleted, EventKind.TaskDeleted)(kind)
     payload(kind, Some(p), Option.when(withTask)(task), Some(actor), detail, now)
 
-/** 通知（画面内・メール）。 */
-final class NotifyService(activity: ActivityStore, projects: ProjectStore, users: UserStore, sessions: SessionAuth, cfg: ApiConfig):
+/** 通知（画面内・メール・連携していればチャット（stui））。 */
+final class NotifyService(activity: ActivityStore, projects: ProjectStore, users: UserStore, sessions: SessionAuth, cfg: ApiConfig,
+    chat: Option[ChatNotifier] = None):
 
   /** users（操作した本人を除く）に通知する。そのプロジェクトを閲覧できない人には送らない。 */
   def send(kind: String, to: Set[UUID], actor: Option[UUID], projectId: UUID, taskId: Option[UUID], commentId: Option[UUID],
@@ -118,7 +119,9 @@ final class NotifyService(activity: ActivityStore, projects: ProjectStore, users
             case None => IO.unit
             case Some(_) =>
               activity.notify(uid, kind, Some(projectId), taskId, commentId, actor, title, body) *>
-                activity.enqueueMail(Some(uid), None, Some(projectId), s"[skea] $title", mailBody, dedupe.map(d => s"$d:$uid"), mailDelay)
+                activity.enqueueMail(Some(uid), None, Some(projectId), s"[skea] $title", mailBody, dedupe.map(d => s"$d:$uid"), mailDelay) *>
+                // チャットへは裏で送る（遅れや失敗で操作を止めない）
+                chat.traverse_(_.send(uid, kind, title, actorName.fold(body)(n => s"$n さん: $body"), link).start.void)
           }
         }
       }
@@ -153,6 +156,14 @@ final class TaskService(tasks: TaskStore, projects: ProjectStore, access: Access
 
   private def link(key: String) = s"/tasks/$key"
 
+  /** 担当者・報告者は、そのプロジェクトを見られる人だけ。 */
+  def peopleOk(projectId: UUID, ids: List[UUID]): IO[Either[Fail, Unit]] =
+    if ids.isEmpty then IO.pure(Right(()))
+    else projects.audience(projectId, adminGroups).map { a =>
+      val members = a.map(_.id).toSet
+      Either.cond(ids.forall(members), (), Fail.Invalid("担当者・報告者には、このプロジェクトのメンバーを指定してください"))
+    }
+
   private def needWrite(op: Op): Either[Fail, Unit] =
     Either.cond(op.s.canWrite, (), Fail.Forbidden("このAPIキーは参照専用です"))
 
@@ -168,6 +179,9 @@ final class TaskService(tasks: TaskStore, projects: ProjectStore, access: Access
       case Right((_, start, due)) if start.zip(due).exists((s, d) => s.isAfter(d)) => IO.pure(Left(Fail.Invalid("開始日は期日より前にしてください")))
       case Right((_, start, due)) =>
         access.project(op.s, projectId, Role.Edit).flatMap {
+          case Left(f)  => IO.pure(Left(f): Either[Fail, Unit])
+          case Right(_) => peopleOk(projectId, r.assigneeId.toList ++ r.reporterId.toList)
+        }.flatMap {
           case Left(f) => IO.pure(Left(f))
           case Right(_) =>
             val desc     = r.description.filter(d => RichText.valid(d) && !RichText.isBlank(d))
@@ -256,7 +270,11 @@ final class TaskService(tasks: TaskStore, projects: ProjectStore, access: Access
   def update(op: Op, task: TaskCore, ch: TaskChanges): Res[TaskDto] =
     needWrite(op) match
       case Left(f) => IO.pure(Left(f))
-      case Right(_) => tasks.update(task.id, ch).orFail.flatMap {
+      case Right(_) => peopleOk(task.projectId, ch.assigneeId.flatten.filterNot(task.assigneeId.contains).toList ++
+          ch.reporterId.flatten.filterNot(task.reporterId.contains).toList).flatMap {
+        case Left(f) => IO.pure(Left(f))
+        case Right(_) => tasks.update(task.id, ch).orFail
+      }.flatMap {
         case Left(f) => IO.pure(Left(f))
         case Right(r) => afterUpdate(op, r).flatMap(_ => tasks.dto(task.id).map(_.toRight(Fail.NotFound("タスクが見つかりません"))))
       }
@@ -350,7 +368,7 @@ final class TaskService(tasks: TaskStore, projects: ProjectStore, access: Access
     val doc = if body.isString then RichText.fromMarkdown(body.asString.get) else body
     tasks.comment(commentId).flatMap {
       case None => IO.pure(Left(Fail.NotFound("コメントが見つかりません")))
-      case Some(old) if !old.author.exists(_.id == op.userId) && !op.s.isAdmin => IO.pure(Left(Fail.Forbidden("自分のコメントだけ編集できます")))
+      case Some(old) if !old.author.exists(_.id == op.userId) && !op.s.canAdmin => IO.pure(Left(Fail.Forbidden("自分のコメントだけ編集できます")))
       case Some(_) if !RichText.valid(doc) || RichText.isBlank(doc) => IO.pure(Left(Fail.Invalid("コメントを入力してください")))
       case Some(old) =>
         for

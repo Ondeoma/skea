@@ -84,7 +84,7 @@ def secretHelp(p: String): String = p match {
     <p class="muted small">コミットメッセージに <code>{{ key }}-123</code> のようなタスクIDを書くと、そのタスクにコミットが自動でリンクされます。
       リポジトリ側に下の Webhook（push イベント）を設定してください。Webhook を設定できない場合は、アクセストークンを登録すると5分ごとにコミットを取得します。</p>
     <div v-for="r in s.repos" :key="r.id" class="panel">
-      <div class="row"><b>{{ label(r.provider) }}</b><a :href="r.webUrl" target="_blank" rel="noopener">{{ title(r) }}</a>
+      <div class="row"><b>{{ label(r.provider) }}</b><a :href="Fmt.href(r.webUrl)" target="_blank" rel="noopener">{{ title(r) }}</a>
         <span v-if="r.allRepos" class="badge">一括監視</span>
         <span v-if="r.branch.isDefined" class="badge">{{ r.branch.getOrElse("") }}</span><span class="grow"></span>
         <button v-if="r.hasToken" class="small" @click="poll(s, r)">今すぐ取得</button>

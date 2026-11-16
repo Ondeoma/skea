@@ -104,8 +104,19 @@ final class AutomationEngine(
             fireFor(r, q, event).map(Right(_))
     }
 
+  /** 実行するユーザー（システム管理者でも、自動化ではプロジェクトのメンバーとしての権限だけで動かす）。 */
   private def runAs(r: RuleRow): IO[Option[AuthSession]] =
-    r.runAs.orElse(r.createdBy).flatTraverse(u => sessions.sessionFor(u, AuthVia.Automation(r.id)))
+    r.runAs.orElse(r.createdBy).flatTraverse(u => sessions.sessionFor(u, AuthVia.Automation(r.id))).map(_.map(_.copy(isAdmin = false)))
+
+  private val mailDomains: Set[String] =
+    sys.env.get("AUTOMATION_MAIL_DOMAINS").toList.flatMap(_.split(',').toList).map(_.trim.toLowerCase.stripPrefix("@")).filter(_.nonEmpty).toSet
+
+  private def mailAllowed(addr: String): IO[Boolean] =
+    if mailDomains.contains(addr.substring(addr.lastIndexOf('@') + 1).toLowerCase) then IO.pure(true)
+    else users.list(Some(addr), includeDisabled = false, 5).map(_.exists(_.email.exists(_.equalsIgnoreCase(addr))))
+
+  /** 実行するユーザーが編集できるタスクか。 */
+  private def editable(run: Run, id: UUID): IO[Boolean] = access.task(run.op.s, id.toString, Role.Edit).map(_.isRight)
 
   // ---------------------------------------------------------------- 実行
 
@@ -224,7 +235,7 @@ final class AutomationEngine(
       case None => IO(run.add("warn", s"$what: 対象のタスクがありません"))
       case Some(id) => tasks.core(id).flatMap {
           case None    => IO(run.add("warn", s"$what: タスクが見つかりません"))
-          case Some(t) => f(t)
+          case Some(t) => editable(run, t.id).ifM(f(t), IO(run.add("error", s"$what: このタスクを編集する権限がありません")))
         }
 
   private def report[A](run: Run, what: String)(r: Res[A]): IO[Unit] =
@@ -362,7 +373,10 @@ final class AutomationEngine(
     case Action.SendEmail(to, subject, body) =>
       val addrs = run.render(to).split(',').toList.map(_.trim).filter(_.nonEmpty)
       addrs.traverse_ { a =>
-        if a.contains("@") then activity.enqueueMail(None, Some(a), Some(run.rule.projectId), run.render(subject), run.render(body), None, 0)
+        // 外部のアドレスは、登録しているユーザーのものか、AUTOMATION_MAIL_DOMAINS のドメインだけ（踏み台にさせない）
+        if a.contains("@") then mailAllowed(a).ifM(
+          activity.enqueueMail(None, Some(a), Some(run.rule.projectId), run.render(subject), run.render(body), None, 0),
+          IO(run.add("error", s"$a には送れません（登録しているユーザーか、許可したドメインのアドレスだけに送れます）")))
         else users.resolve(a).flatMap(_.traverse_(u => activity.enqueueMail(Some(u), None, Some(run.rule.projectId), run.render(subject), run.render(body), None, 0)))
       } *> IO(run.add("info", s"メールを送信待ちにしました（${addrs.mkString(", ")}）"))
     case Action.Notify(who, message) =>
@@ -387,6 +401,10 @@ final class AutomationEngine(
           val b    = body.map(j => j.asString.map(run.render).getOrElse(Automation.renderJson(j, run.ctx, run.today).noSpaces))
           val req0 = Request[IO](m, uri).putHeaders(hs).putHeaders("User-Agent" -> "skea-automation")
           val req  = b.fold(req0)(x => req0.withEntity(x).withContentType(`Content-Type`(MediaType.application.json)))
+          NetGuard.check(uri).flatMap {
+            case Left(m) =>
+              IO { run.add("error", s"Web リクエスト（$method $u）: $m"); run.setVar(saveAs, Json.obj("status" -> 0.asJson, "body" -> Json.Null, "error" -> m.asJson)) }
+            case Right(_) =>
           http.run(req).use(r => r.bodyText.compile.string.map(s => (r.status.code, s.take(100000)))).timeout(20.seconds).attempt.map {
             case Left(e) =>
               run.add("error", s"Web リクエスト（$method $u）に失敗しました: ${e.getMessage}")
@@ -394,6 +412,7 @@ final class AutomationEngine(
             case Right((code, text)) =>
               run.add(if code >= 400 then "warn" else "info", s"Web リクエスト $method $u → $code")
               run.setVar(saveAs, Json.obj("status" -> code.asJson, "body" -> parse(text).getOrElse(Json.fromString(text))))
+          }
           }
     case Action.SetVar(name, value) => IO(run.setVar(name, Json.fromString(run.render(value))))
     case Action.If(cond, thenDo, elseDo) =>
@@ -407,7 +426,8 @@ final class AutomationEngine(
             case "subtasks" => tasks.subtaskIds(id)
             case "parent"   => tasks.core(id).map(_.flatMap(_.parentId).toList)
             case _          => tasks.linkedIds(id)
-          idsF.flatMap { ids =>
+          // 実行するユーザーが編集できるタスクだけ（リンク先がほかのプロジェクトのときなど）
+          idsF.flatMap(_.filterA(editable(run, _))).flatMap { ids =>
             val saved = run.ctx
             ids.traverse_ { cid =>
               taskContext(cid).flatMap {

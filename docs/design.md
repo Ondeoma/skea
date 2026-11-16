@@ -72,9 +72,13 @@ skea はチーム向けのタスク管理システムです（プロジェクト
 - `comment_draft(user_id, task_id, body jsonb, updated_at)` … 入力中のコメントの下書き（ユーザー＋タスクごとに1つ。投稿すると消す）。
 - `comment_reaction(comment_id, user_id, emoji)` … 決まった絵文字か、`custom_emoji(name, s3_key)` に登録したカスタム絵文字（`:name:`）。
 - `task.priority`（highest〜lowest）・`task.type`（task / bug / story / epic / improvement）。
-- `task_template(id, project_id, name, title, description, status_id, assignee_id, label_ids, fields, subtasks, due_in_days)` … タスクのテンプレート。
+- `task_template(id, project_id, user_id, name, title, description, status_id, assignee_id, label_ids, fields, subtasks, due_in_days, priority, task_type)` … タスクのテンプレート。
+  project_id（プロジェクトで共有）か user_id（自分用）のどちらか一方を持つ。自分用はどのプロジェクトでも使えるため、プロジェクトに属する値（ステータス・担当者・ラベル・カスタムフィールド）は保存しない。
+  自分用は本人だけが読み書きでき、繰り返しタスクには使えない。
 - `recurring_task(id, project_id, template_id, frequency, weekday, monthday, active_sprint, next_run, enabled, last_run_at, last_task_key)` …
   テンプレートから決まった日にタスクを作る。5分ごとに1ノードだけが確かめ、作成者として作る。止まっていた間の分はまとめて1つだけ作る。
+- `board_filter(id, project_id, user_id, name, cond)` … ボードの絞り込み条件（文字・担当者・ラベル・優先度・種類・期日）。名前を付けて保存し、ボードの上のボタンで呼び出す。
+  user_id が空ならプロジェクトで共有する。自分用は閲覧権限で、共有は編集権限で保存できる。共有のものは作った人か管理者が消せる。
 - `worklog(id, task_id, user_id, work_date, minutes, note, created_at)`
 - `comment(id, task_id, author_id, body jsonb, body_text, created_at, updated_at, deleted_at)`
 - `custom_field(id, project_id, name, kind, options jsonb, required, position)` … `kind` は `text`/`textarea`/`checkbox`/`radio`/`select`
@@ -82,7 +86,7 @@ skea はチーム向けのタスク管理システムです（プロジェクト
 - `attachment(id, task_id, comment_id, s3_key, file_name, size, content_type, sha256, created_by, created_at)`
 - `task_event(id bigserial, project_id, task_id, actor_id, via, kind, detail jsonb, at)` … 変更履歴。画面の同期（`id` より新しいものを取得）にも使う。
 - `notification(id, user_id, kind, task_id, comment_id, actor_id, title, body, at, read_at)` … `kind` は `mention`/`assigned`/`comment`/`updated`/`status`/`due`/`automation`
-- `notify_pref(user_id, kind, email)` … 通知の種類ごとのメール送信可否
+- `notify_pref(user_id, kind, email, chat)` … 通知の種類ごとのメール・チャット（stui）への送信可否
 - `mail_outbox(id, user_id, subject, body, dedupe_key, not_before, attempts, sent_at, skipped, last_error)`
 - `webhook(id, project_id, name, url, secret, events text[], enabled)`, `webhook_delivery(...)` … 送信のアウトボックス（再試行つき）
 - `automation_rule(id, project_id, name, enabled, trigger jsonb, actions jsonb, run_as, created_by, incoming_token)`、`automation_run(...)`、`automation_queue(...)`
@@ -95,6 +99,11 @@ skea はチーム向けのタスク管理システムです（プロジェクト
 - **ログイン**：OIDC（Authorization Code + PKCE）。ID token の `iss`/`aud`/`exp`/`nonce` を検証（skiwi と同じ）。
 - **ユーザー**：初回ログインで作成。`ADMIN_GROUPS` の所属者、または画面で管理者にしたユーザーがシステム管理者。
   IdP 未設定の開発環境では `DEV_LOGIN=true` で名前だけのログインを許可する（本番では使わない）。
+  ログインの state は、DB に加えてブラウザの Cookie にも入れて照合する。
+- **CSRF**: Cookie のセッションでの更新系の要求は、Origin（なければ Referer）が `PUBLIC_URL` と同じ origin のときだけ受け付ける。
+- **外部への送信（SSRF 対策）**: Webhook・自動化の Web リクエスト・リポジトリ連携は、名前解決したアドレスが内部（loopback・link-local・プライベート）なら送らない（`OUTBOUND_ALLOW_HOSTS` で例外）。
+- **自動化の実行ユーザー**: 自分以外を指定できるのはシステム管理者だけ。実行中はシステム管理者の権限を使わず、編集できないタスク（ほかのプロジェクトのリンク先など）には触れない。
+- **リクエストの上限**: 本文は 2MB（アップロードは `MAX_UPLOAD_BYTES`、受信 Webhook は 10MB）。リッチテキストは入れ子の深さも制限する。
 - **APIキー**：`skea_` で始まるランダム値。ハッシュのみ保存。`Authorization: Bearer` で送る。
   - スコープ：`read`（参照のみ）、`write`（作成・更新・削除）、`admin`（管理操作。発行者が管理者のときだけ有効）。
   - プロジェクトの限定：指定したプロジェクトだけを操作できる（未指定なら本人が見られるすべて）。
@@ -175,11 +184,13 @@ skea はチーム向けのタスク管理システムです（プロジェクト
   名前に組織名などを入れると、その配下のリポジトリだけを対象にする。ポーリングでは最近更新された20件のリポジトリを確認する。
 - リンクしたときは `commit_linked` イベント（自動化のトリガー）を出す。
 
-## 11. skiwi・skawau との連携
+## 11. skiwi・skawau・stui との連携
 
 各ユーザーが個人設定で skiwi・skawau を OAuth 2.0（認可コード + PKCE）で許可すると、説明・コメント・リンクに貼った
 skiwi のページ・skawau のファイルの URL に、その人の権限でタイトル・ファイル名を表示する。トークンは `APP_SECRET` から作る鍵で AES-GCM 暗号化して保存する。
 取り決めは [skiwi-integration.md](skiwi-integration.md)・[skawau-integration.md](skawau-integration.md)。
+
+stui（チャット）とも同じ仕組みで連携し、許可したユーザーには skea の通知を stui の DM でも送る（[stui-integration.md](stui-integration.md)）。
 
 ## 12. MCP
 

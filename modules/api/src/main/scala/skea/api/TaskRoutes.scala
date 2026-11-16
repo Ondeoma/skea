@@ -33,14 +33,18 @@ final class TaskRoutes(
     cfg: ApiConfig
 ) extends RouteSupport:
 
+  /** 見られないプロジェクトのタスクへのリンクは返さない（タイトルなどが漏れないように）。 */
+  private def visibleLinks(s: AuthSession, ls: List[TaskLinkDto]): IO[List[TaskLinkDto]] =
+    ls.filterA(l => l.target.fold(IO.pure(true))(r => access.task(s, r.id.toString, Role.View).map(_.isRight)))
+
   private def detail(s: AuthSession, t: TaskCore, role: Role): IO[Response[IO]] =
     tasks.detail(t.id).flatMap {
       case None => err(Status.NotFound, "タスクが見つかりません")
       case Some(d) =>
-        activity.markTaskRead(s.user.id, t.id).whenA(s.isSession) *>
+        (activity.markTaskRead(s.user.id, t.id).whenA(s.isSession) *> visibleLinks(s, d.links)).flatMap(links =>
           Ok(TaskDetailDto(d.task, d.core.description, d.core.description.fold("")(RichText.toHtml), d.ancestors, d.subtasks, d.watchers,
-            d.watchers.exists(_.id == s.user.id), d.links, d.predecessors, d.successors, d.fields, d.commits, d.attachments, role.asString,
-            d.latestEventId))
+            d.watchers.exists(_.id == s.user.id), links, d.predecessors, d.successors, d.fields, d.commits, d.attachments, role.asString,
+            d.latestEventId)))
     }
 
   /** リアクションを付ける・外す（決まった絵文字だけ。閲覧できる人なら付けられる）。 */
@@ -112,14 +116,14 @@ final class TaskRoutes(
     case req @ POST -> Root / "api" / "tasks" / id / "watchers" =>
       withTask(req, id, Role.Edit)((_, t, _) => body[Json](req)(j => j.hcursor.get[UUID]("userId").toOption match
         case None    => err(Status.BadRequest, "userId を指定してください")
-        case Some(u) => users.find(u).flatMap(_.fold(err(Status.NotFound, "ユーザーが見つかりません"))(_ => tasks.watch(t.id, u) *> NoContent()))))
+        case Some(u) => respond(svc.peopleOk(t.projectId, List(u)))(_ => tasks.watch(t.id, u) *> NoContent())))
 
     case req @ DELETE -> Root / "api" / "tasks" / id / "watchers" / UuidVar(uid) =>
       withTask(req, id, Role.Edit)((_, t, _) => tasks.unwatch(t.id, uid) *> NoContent())
 
     // ---------------------------------------------------------------- リンク
     case req @ GET -> Root / "api" / "tasks" / id / "links" =>
-      withTask(req, id, Role.View)((_, t, _) => tasks.links(t.id).flatMap(Ok(_)))
+      withTask(req, id, Role.View)((s, t, _) => tasks.links(t.id).flatMap(visibleLinks(s, _)).flatMap(Ok(_)))
 
     case req @ POST -> Root / "api" / "tasks" / id / "links" =>
       withTask(req, id, Role.Edit)((s, t, _) => body[CreateLinkReq](req) { r =>

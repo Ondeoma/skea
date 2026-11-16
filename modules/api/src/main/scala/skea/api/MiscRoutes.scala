@@ -44,6 +44,29 @@ final class SearchRoutes(search: SearchStore, projects: ProjectStore, activity: 
 
     case req @ DELETE -> Root / "api" / "filters" / UuidVar(id) => authed(req)(s => search.deleteFilter(s.user.id, id) *> NoContent())
 
+    // ---------------------------------------------------------------- ボードの絞り込み条件
+    case req @ GET -> Root / "api" / "projects" / UuidVar(pid) / "board-filters" =>
+      withProject(req, pid, Role.View)((s, _) => search.boardFilters(pid, s.user.id).flatMap(Ok(_)))
+
+    case req @ POST -> Root / "api" / "projects" / UuidVar(pid) / "board-filters" =>
+      // 自分用は閲覧権限で、プロジェクトで共有するものは編集権限で保存できる
+      withProject(req, pid, Role.View)((s, role) => body[BoardFilterReq](req)(r =>
+        if r.name.trim.isEmpty || r.name.length > 50 then err(Status.BadRequest, "名前を 50 文字までで入力してください")
+        else if r.cond.isEmpty then err(Status.BadRequest, "絞り込みの条件がありません")
+        else if r.cond.productIterator.exists(_.toString.length > 200) then err(Status.BadRequest, "条件が長すぎます")
+        else if r.shared && role < Role.Edit then err(Status.Forbidden, "共有するには編集権限が必要です")
+        else search.saveBoardFilter(pid, s.user.id, r).orFail.flatMap(_.fold(fail, Created(_)))))
+
+    case req @ DELETE -> Root / "api" / "board-filters" / UuidVar(id) =>
+      authed(req)(s => search.boardFilter(id).flatMap {
+        case Some((pid, Some(uid), _)) if uid == s.user.id =>
+          respond(access.project(s, pid, Role.View))(_ => search.deleteBoardFilter(id) *> NoContent())
+        case Some((pid, None, by)) =>
+          // 共有のものは、作った人か、プロジェクトの管理者が消せる
+          respond(access.project(s, pid, if by.contains(s.user.id) then Role.Edit else Role.Admin))(_ => search.deleteBoardFilter(id) *> NoContent())
+        case _ => err(Status.NotFound, "条件が見つかりません")
+      })
+
     // ---------------------------------------------------------------- 通知
     case req @ GET -> Root / "api" / "notifications" =>
       authed(req) { s =>
@@ -90,8 +113,13 @@ final class IntegrationRoutes(
     RepoDto(r.id, r.provider, r.name, r.webUrl, r.apiUrl, r.branch, s"${cfg.publicUrl}/hooks/scm/${r.id}", r.secret, r.tokenEnc.isDefined, r.lastPolledAt,
       r.allRepos)
 
-  private def ruleOk(r: RuleReq): Either[String, Unit] =
-    if r.name.trim.isEmpty then Left("名前を入力してください") else Automation.validate(r.trigger, r.actions)
+  /** 実行するユーザーは、自分か（空なら作成者）、もとから設定されている人だけ。他人を指定できるのはシステム管理者だけ。 */
+  private def httpUrl(u: String): Boolean = { val t = u.trim.toLowerCase; t.startsWith("https://") || t.startsWith("http://") }
+
+  private def ruleOk(s: AuthSession, r: RuleReq, current: Option[UUID] = None): Either[String, Unit] =
+    if r.name.trim.isEmpty then Left("名前を入力してください")
+    else if r.runAs.exists(u => u != s.user.id && !current.contains(u) && !s.canAdmin) then Left("実行するユーザーには自分だけを指定できます")
+    else Automation.validate(r.trigger, r.actions)
 
   /** プロジェクトに属する設定を読み、そのプロジェクトの管理権限を確認してから処理する（見えなければ 404）。 */
   private def withItem[A](req: Request[IO], find: IO[Option[A]], what: String)(pid: A => UUID)(f: (AuthSession, A) => IO[Response[IO]]) =
@@ -109,15 +137,21 @@ final class IntegrationRoutes(
       withProject(req, pid, Role.Admin)((s, _) => body[WebhookReq](req)(r => webhooks.validUrl(r.url) match
         case Left(f) => fail(f)
         case Right(_) if r.name.trim.isEmpty => err(Status.BadRequest, "名前を入力してください")
-        case Right(u) =>
+        case Right(u) => NetGuard.check(u).flatMap {
+          case Left(m) => err(Status.BadRequest, m)
+          case Right(_) =>
           integ.createWebhook(pid, r.copy(url = u, events = r.events.filter(EventKind.all.contains)), Crypto.randomToken(24)).flatMap(id =>
-            audit(s, "webhook.create", pid, Json.obj("url" -> u.asJson)) *> integ.webhook(id).flatMap(w => Created(w.map(hookDto))))))
+            audit(s, "webhook.create", pid, Json.obj("url" -> u.asJson)) *> integ.webhook(id).flatMap(w => Created(w.map(hookDto))))
+        }))
 
     case req @ PUT -> Root / "api" / "webhooks" / UuidVar(id) =>
       withItem(req, integ.webhook(id), "Webhook")(_.projectId)((s, w) => body[WebhookReq](req)(r => webhooks.validUrl(r.url) match
         case Left(f) => fail(f)
-        case Right(u) => integ.updateWebhook(id, r.copy(url = u, events = r.events.filter(EventKind.all.contains))) *>
-            audit(s, "webhook.update", w.projectId) *> NoContent()))
+        case Right(u) => NetGuard.check(u).flatMap {
+          case Left(m) => err(Status.BadRequest, m)
+          case Right(_) => integ.updateWebhook(id, r.copy(url = u, events = r.events.filter(EventKind.all.contains))) *>
+              audit(s, "webhook.update", w.projectId) *> NoContent()
+        }))
 
     case req @ DELETE -> Root / "api" / "webhooks" / UuidVar(id) =>
       withItem(req, integ.webhook(id), "Webhook")(_.projectId)((s, w) => integ.deleteWebhook(id) *> audit(s, "webhook.delete", w.projectId) *> NoContent())
@@ -145,7 +179,7 @@ final class IntegrationRoutes(
       withProject(req, pid, Role.Admin)((_, _) => integ.rules(pid).flatMap(_.traverse(ruleDto)).flatMap(Ok(_)))
 
     case req @ POST -> Root / "api" / "projects" / UuidVar(pid) / "automations" =>
-      withProject(req, pid, Role.Admin)((s, _) => body[RuleReq](req)(r => ruleOk(r) match
+      withProject(req, pid, Role.Admin)((s, _) => body[RuleReq](req)(r => ruleOk(s, r) match
         case Left(e) => err(Status.BadRequest, e)
         case Right(_) =>
           val token = Option.when(r.trigger.hcursor.get[String]("type").contains("incoming_webhook"))(Crypto.randomToken(24))
@@ -156,7 +190,7 @@ final class IntegrationRoutes(
       withProject(req, pid, Role.Admin)((_, _) => integ.runs(pid, param(req, "ruleId").flatMap(uuidOpt), intParam(req, "limit", 50, 200)).flatMap(Ok(_)))
 
     case req @ PUT -> Root / "api" / "automations" / UuidVar(id) =>
-      withItem(req, integ.rule(id), "ルール")(_.projectId)((s, old) => body[RuleReq](req)(r => ruleOk(r) match
+      withItem(req, integ.rule(id), "ルール")(_.projectId)((s, old) => body[RuleReq](req)(r => ruleOk(s, r, old.runAs) match
         case Left(e) => err(Status.BadRequest, e)
         case Right(_) =>
           val token = Option.when(r.trigger.hcursor.get[String]("type").contains("incoming_webhook"))(Crypto.randomToken(24))
@@ -179,8 +213,9 @@ final class IntegrationRoutes(
     case req @ POST -> Root / "api" / "projects" / UuidVar(pid) / "repos" =>
       withProject(req, pid, Role.Admin)((s, _) => body[RepoReq](req)(r => ScmProvider.parse(r.provider) match
         case None => err(Status.BadRequest, "プロバイダは github / gitlab / bitbucket / forgejo です")
-        case Some(_) if (r.name.trim.isEmpty && !r.allRepos.contains(true)) || !r.webUrl.startsWith("http") =>
-          err(Status.BadRequest, "名前（owner/repo）と URL を入力してください")
+        case Some(_) if (r.name.trim.isEmpty && !r.allRepos.contains(true)) || !httpUrl(r.webUrl) =>
+          err(Status.BadRequest, "名前（owner/repo）と URL（http(s)://）を入力してください")
+        case Some(_) if r.apiUrl.exists(u => u.trim.nonEmpty && !httpUrl(u)) => err(Status.BadRequest, "API の URL は http(s):// で始めてください")
         case Some(p) =>
           integ.createRepo(pid, r.copy(provider = p.asString, name = r.name.trim), Crypto.randomToken(24), r.token.filter(_.trim.nonEmpty).map(box.encrypt))
             .flatMap(id => audit(s, "repo.create", pid, Json.obj("name" -> r.name.asJson)) *> integ.repo(id).flatMap(x => Created(x.map(repoDto))))))
@@ -188,8 +223,13 @@ final class IntegrationRoutes(
     case req @ PUT -> Root / "api" / "repos" / UuidVar(id) =>
       withItem(req, integ.repo(id), "リポジトリ")(_.projectId)((s, old) => body[RepoReq](req)(r => ScmProvider.parse(r.provider) match
         case None => err(Status.BadRequest, "プロバイダは github / gitlab / bitbucket / forgejo です")
+        case Some(_) if !httpUrl(r.webUrl) || r.apiUrl.exists(u => u.trim.nonEmpty && !httpUrl(u)) =>
+          err(Status.BadRequest, "URL は http(s):// で始めてください")
         case Some(p) =>
-          integ.updateRepo(id, r.copy(provider = p.asString), r.token.filter(_.trim.nonEmpty).map(box.encrypt), r.token.contains("")) *>
+          // 送り先（プロバイダ・URL）を変えたら、保存してあるトークンは捨てる（別のサーバーへトークンを送らせない）
+          val moved = old.provider != p.asString || old.webUrl != r.webUrl || old.apiUrl.filter(_.trim.nonEmpty) != r.apiUrl.filter(_.trim.nonEmpty)
+          val newToken = r.token.filter(_.trim.nonEmpty)
+          integ.updateRepo(id, r.copy(provider = p.asString), newToken.map(box.encrypt), r.token.contains("") || (moved && newToken.isEmpty)) *>
             audit(s, "repo.update", old.projectId) *> NoContent()))
 
     case req @ DELETE -> Root / "api" / "repos" / UuidVar(id) =>

@@ -249,7 +249,23 @@ object RichText:
     go(doc).toSet
 
   /** 文書として最低限の形か（type が doc）。 */
-  def valid(doc: Json): Boolean = tpe(doc) == "doc"
+  def valid(doc: Json): Boolean = tpe(doc) == "doc" && depth(doc) <= MaxDepth
+
+  /** 入れ子の深さの上限（再帰で処理するため、深すぎる文書は受け付けない）。 */
+  val MaxDepth = 120
+
+  /** JSON の入れ子の深さ（再帰を使わずに数える）。 */
+  def depth(j: Json): Int =
+    var max = 0
+    var stack: List[(Json, Int)] = List(j -> 1)
+    while stack.nonEmpty do
+      val (x, d) = stack.head
+      stack = stack.tail
+      if d > max then max = d
+      if d <= MaxDepth + 1 then
+        x.asArray.foreach(_.foreach(c => stack = (c -> (d + 1)) :: stack))
+        x.asObject.foreach(_.values.foreach(c => stack = (c -> (d + 1)) :: stack))
+    max
 
   /** 本文が空か（文字・画像・メンションがない）。 */
   def isBlank(doc: Json): Boolean =

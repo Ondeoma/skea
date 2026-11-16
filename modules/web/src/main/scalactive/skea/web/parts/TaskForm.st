@@ -1,6 +1,7 @@
 <script lang="scala">
 import skea.web.*
 import io.circe.Json
+import io.circe.syntax.*
 import skea.shared.*
 
 import java.util.UUID
@@ -28,7 +29,10 @@ case class State(meta: RV[Option[ProjectMetaDto]] = RV(None),
                  templates: RV[List[TemplateDto]] = RV(Nil),
                  priority: RV[String] = RV(Priority.Medium),
                  taskType: RV[String] = RV(TaskType.Task),
-                 template: RV[Option[TemplateDto]] = RV(None))
+                 template: RV[Option[TemplateDto]] = RV(None),
+                 saving: RV[Boolean] = RV(false),
+                 tplName: RV[String] = RV(""),
+                 tplShared: RV[Boolean] = RV(false))
 
 def initState() = State()
 
@@ -40,8 +44,13 @@ def mounted(s: State, props: Props): Unit = {
     s.sprint := m.sprints.find(_.state == "active").map(_.id.toString).getOrElse("")
   }
   Store.audience(props.projectId).foreach(s.audience := _)
-  if (props.parentId.isEmpty) Api.get[List[TemplateDto]](s"/api/projects/${props.projectId}/templates").foreach(s.templates := _)
+  if (props.parentId.isEmpty) loadTemplates(s, props)
 }
+
+/** プロジェクトのテンプレートと、自分用のテンプレート. */
+def loadTemplates(s: State, props: Props): Unit =
+  Api.get[List[TemplateDto]](s"/api/projects/${props.projectId}/templates").zip(Api.get[List[TemplateDto]]("/api/me/templates"))
+    .foreach((p, m) => s.templates := p ++ m)
 
 /** テンプレートの値を入れる（作成するとテンプレートのサブタスクも作る）. */
 def applyTemplate(s: State, id: String): Unit = {
@@ -51,9 +60,14 @@ def applyTemplate(s: State, id: String): Unit = {
     val today = Fmt.today()
     s.title := x.title.replace("{{date}}", today).replace("{{month}}", today.take(7))
     x.statusId.foreach(v => s.statusId := v.toString)
-    s.assignee := x.assigneeId.map(_.toString).getOrElse("")
-    s.labels := x.labelIds.map(_.toString)
-    s.fields := x.fields
+    x.priority.foreach(s.priority := _)
+    x.taskType.foreach(s.taskType := _)
+    // 自分用のテンプレートはプロジェクトの値を持たないので、選んである値を残す
+    if (!x.personal) {
+      s.assignee := x.assigneeId.map(_.toString).getOrElse("")
+      s.labels := x.labelIds.map(_.toString)
+      s.fields := x.fields
+    }
     s.due := x.dueInDays.map(d => Fmt.addDays(today, d)).getOrElse("")
     s.editor.v.foreach(_.setJSON(x.description.map(Editor.toJs).getOrElse(null)))
     if (x.labelIds.nonEmpty || x.fields.nonEmpty) s.more := true
@@ -61,6 +75,26 @@ def applyTemplate(s: State, id: String): Unit = {
 }
 
 def close(): Unit = Store.createDialog := None
+
+/** 入力中の内容をテンプレートとして保存する（自分用か、プロジェクトで共有するか）. 期日は今日から何日後かにする. */
+def saveTemplate(s: State, props: Props): Unit = {
+  val name = s.tplName.v.trim
+  if (name.isEmpty || s.title.v.trim.isEmpty) s.error := "テンプレートの名前とタイトルを入力してください"
+  else {
+    val dueIn = Option(s.due.v).filter(_.nonEmpty).map(d => Fmt.daysBetween(Fmt.today(), d)).filter(_ >= 0)
+    val r = TemplateReq(name, s.title.v.trim, s.editor.v.filterNot(_.isEmpty()).map(h => Editor.fromJs(h.getJSON())),
+      Option(s.statusId.v).filter(_.nonEmpty).map(UUID.fromString), Option(s.assignee.v).filter(_.nonEmpty).map(UUID.fromString),
+      s.labels.v.map(UUID.fromString), s.fields.v.filter((_, v) => !v.isNull), s.template.v.toList.flatMap(_.subtasks), dueIn,
+      Some(s.priority.v), Some(s.taskType.v))
+    val url = if (s.tplShared.v) s"/api/projects/${props.projectId}/templates" else "/api/me/templates"
+    Store.report(Api.post[TemplateDto](url, r.asJson)) { _ =>
+      s.saving := false
+      s.tplName := ""
+      Store.toast(s"テンプレート「$name」を保存しました")
+      loadTemplates(s, props)
+    }
+  }
+}
 
 def setField(s: State, id: UUID, v: Json): Unit = s.fields := (if (v.isNull) s.fields.v - id.toString else s.fields.v.updated(id.toString, v))
 
@@ -106,7 +140,10 @@ def heading(props: Props): String = if (props.parentId.isDefined) "サブタス�
 def projectName(s: State) = s.meta.mapC(_.map(m => s"${m.project.key} ${m.project.name}").getOrElse(""))
 def statusOpts(s: State) = s.meta.mapC(m => Opt.statuses(m.toList.flatMap(_.statuses)))
 def sprintOpts(s: State) = s.meta.mapC(_.toList.flatMap(_.sprints).map(sp => Opt(sp.id.toString, sp.name, hint = if (sp.state == "active") "進行中" else "")))
-def templateOpts(s: State) = s.templates.mapC(_.map(t => Opt(t.id.toString, t.name, hint = if (t.subtasks.nonEmpty) s"サブタスク ${t.subtasks.size}件" else "")))
+def templateOpts(s: State) = s.templates.mapC(_.map(t => Opt(t.id.toString, t.name,
+  hint = (Option.when(t.personal)("自分用").toList ++ Option.when(t.subtasks.nonEmpty)(s"サブタスク ${t.subtasks.size}件")).mkString(" · "))))
+def canShare = Store.meta.mapC(_.exists(m => Roles.rank(m.project.role) >= 2))
+def isTop(props: Props): Boolean = props.parentId.isEmpty
 def statuses(s: State) = s.meta.mapC(_.map(_.statuses).getOrElse(Nil))
 def sprints(s: State) = s.meta.mapC(_.map(_.sprints).getOrElse(Nil))
 def labels(s: State) = s.meta.mapC(_.map(_.labels).getOrElse(Nil))
@@ -153,8 +190,19 @@ def fields(s: State) = s.meta.mapC(_.map(_.fields).getOrElse(Nil))
       <RichEditor placeholder="詳しい内容（@でメンション）" :projectId="Some(props.projectId)" :onReady="h => s.editor := Some(h)" :onSubmit="_ => submit(s, props)" />
     </div>
     <p v-if="s.error.mapC(_.nonEmpty)" class="error">{{ s.error }}</p>
+    <div v-if="s.saving" class="panel tpl-save">
+      <label class="field"><span>テンプレートの名前</span><input type="text" v-model="s.tplName" maxlength="100" placeholder="週次レポート"></label>
+      <div class="row small">
+        <label v-if="canShare"><input type="checkbox" v-model="s.tplShared"> このプロジェクトで共有する（外すと自分用）</label>
+        <span class="grow"></span>
+        <button type="button" class="small" @click="s.saving := false">やめる</button>
+        <button type="button" class="small primary" @click="saveTemplate(s, props)">テンプレートを保存</button>
+      </div>
+      <p class="muted small">今の入力内容（タイトル・説明・種類・優先度・期日など）を保存します。自分用には、ステータス・担当者・ラベル・カスタムフィールドは入りません。</p>
+    </div>
     <div class="actions">
       <label class="small muted"><input type="checkbox" v-model="s.keepOpen"> 続けて作成</label>
+      <a v-if="isTop(props)" href="#" class="small" @click.prevent="s.saving := !s.saving.v">テンプレートとして保存</a>
       <span class="grow"></span>
       <button type="button" @click="close()">キャンセル</button>
       <button type="submit" class="primary" :disabled="s.busy">作成</button>
@@ -166,4 +214,5 @@ def fields(s: State) = s.meta.mapC(_.map(_.fields).getOrElse(Nil))
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0 .7rem; }
 .more { margin-top: .6rem; padding-top: .6rem; border-top: 1px dashed var(--line); }
 .actions { align-items: center; }
+.tpl-save { margin-top: .6rem; padding: .6rem .8rem; }
 </style>

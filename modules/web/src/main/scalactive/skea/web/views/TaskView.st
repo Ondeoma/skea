@@ -302,7 +302,7 @@ def nameOf(id: UUID): String = Fmt.statusName(Store.meta.v, id)
           <section v-if="d.commits.nonEmpty">
             <h3>コミット</h3>
             <div v-for="c in d.commits" :key="c.sha" class="commit small">
-              <a :href="c.url" target="_blank" rel="noopener" class="key">{{ c.sha.take(8) }}</a>
+              <a :href="Fmt.href(c.url)" target="_blank" rel="noopener" class="key">{{ c.sha.take(8) }}</a>
               <span class="grow">{{ c.message.linesIterator.nextOption().getOrElse("") }}</span>
               <span class="muted">{{ c.author }} · {{ c.repoName }} · {{ Fmt.ago(c.committedAt) }}</span>
             </div>

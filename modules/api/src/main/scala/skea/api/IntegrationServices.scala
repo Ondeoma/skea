@@ -6,7 +6,8 @@ import io.circe.Json
 import io.circe.syntax.*
 import org.http4s.*
 import org.http4s.client.Client
-import org.http4s.headers.`Content-Type`
+import org.http4s.circe.CirceEntityCodec.*
+import org.http4s.headers.{Authorization, `Content-Type`}
 import skea.auth.{Crypto, SecretBox}
 import skea.core.*
 import skea.db.*
@@ -33,11 +34,17 @@ final class WebhookService(integ: IntegrationStore, http: Client[IO], cfg: ApiCo
       .withEntity(body)
       .withContentType(`Content-Type`(MediaType.application.json))
       .putHeaders("X-Skea-Event" -> d.event, "X-Skea-Delivery" -> d.id.toString, "X-Skea-Signature" -> sig, "User-Agent" -> "skea-webhook")
-    http.run(req).use(r => IO.pure(r.status.code)).timeout(15.seconds).attempt.map {
-      case Right(c) if c >= 200 && c < 300 => (OutboxResult.Sent, Some(c))
-      case Right(c) if c == 410            => (OutboxResult.Skip(s"HTTP $c"), Some(c))
-      case Right(c)                        => (OutboxResult.Retry(s"HTTP $c"), Some(c))
-      case Left(e)                         => (OutboxResult.Retry(e.getMessage.take(300)), None)
+    // 宛先は送るたびに確かめる（名前解決の結果が変わっても内部へ送らない）
+    NetGuard.check(req.uri).flatMap {
+      case Left(m) => IO.pure((OutboxResult.Skip(m), None))
+      case Right(_) =>
+        http.run(req).use(r => IO.pure(r.status.code)).timeout(15.seconds).attempt.map {
+          case Right(c) if c >= 200 && c < 300 => (OutboxResult.Sent, Some(c))
+          case Right(c) if c == 410            => (OutboxResult.Skip(s"HTTP $c"), Some(c))
+          case Right(c)                        => (OutboxResult.Retry(s"HTTP $c"), Some(c))
+          // 例外の文（内部のホスト名など）は返さない
+          case Left(e)                         => (OutboxResult.Retry(s"接続できませんでした（${e.getClass.getSimpleName}）"), None)
+        }
     }
 
   def loop: IO[Nothing] =
@@ -45,6 +52,29 @@ final class WebhookService(integ: IntegrationStore, http: Client[IO], cfg: ApiCo
 
   def purgeLoop: IO[Nothing] =
     Periodic.run(1.hour, 24.hours)(e => s"[skea] webhook purge failed: $e")(integ.purgeDeliveries(30))
+
+/**
+ * 通知をチャット（stui）にも送る（docs/stui-integration.md）。連携したユーザーに、stui のボット「skea」からの DM として届く。
+ * 通知の種類ごとに個人設定で止められる。トークンが失効していたら（401）連携を外す。
+ */
+final class ChatNotifier(tokens: IntegrationTokenStore, users: UserStore, http: Client[IO], box: SecretBox, cfg: ApiConfig):
+
+  private val Provider = "stui"
+
+  def send(userId: UUID, kind: String, title: String, text: String, link: String): IO[Unit] =
+    cfg.linkServices.find(_.provider == Provider).traverse_ { c =>
+      tokens.token(userId, Provider).map(_.flatMap(box.decrypt)).flatMap(_.traverse_ { token =>
+        users.chatWanted(userId, kind).flatMap(IO.whenA(_) {
+          val req = Request[IO](Method.POST, Uri.unsafeFromString(s"${c.server}/api/apps/notify"))
+            .withEntity(Json.obj("title" -> title.asJson, "text" -> text.take(2000).asJson, "url" -> s"${cfg.publicUrl}$link".asJson))
+            .putHeaders(Authorization(Credentials.Token(AuthScheme.Bearer, token)))
+          http.run(req).use { r =>
+            if r.status == Status.Unauthorized then tokens.deleteToken(userId, Provider)
+            else IO.whenA(!r.status.isSuccess)(IO.println(s"[skea] stui notify: ${r.status.code}"))
+          }.timeout(10.seconds)
+        })
+      })
+    }.handleErrorWith(e => IO.println(s"[skea] stui notify failed: $e"))
 
 /** ソースコード管理との連携（Webhook の受信・ポーリング）。コミットメッセージのタスクIDでタスクにリンクする。 */
 final class ScmService(integ: IntegrationStore, tasks: TaskStore, projects: ProjectStore, hub: EventHub, api: ScmApi, box: SecretBox,
@@ -78,7 +108,7 @@ final class ScmService(integ: IntegrationStore, tasks: TaskStore, projects: Proj
             tasks.linkCommit(tid, r.id, repo, c.sha, c.message, c.url, c.author, c.branch, c.at).flatMap { isNew =>
               if !isNew then IO.pure(0)
               else hub.emitSystem(p.id, Some(tid), "scm", EventKind.CommitLinked, Json.obj(
-                "sha" -> c.sha.asJson, "message" -> c.message.take(500).asJson, "url" -> c.url.asJson, "author" -> c.author.asJson,
+                "sha" -> c.sha.asJson, "message" -> c.message.take(500).asJson, "url" -> Option(c.url.trim).filter(u => u.startsWith("https://") || u.startsWith("http://")).getOrElse("").asJson, "author" -> c.author.asJson,
                 "repo" -> repo.asJson, "branch" -> c.branch.asJson)).as(1)
             }
           }).map(_.sum)
@@ -88,6 +118,15 @@ final class ScmService(integ: IntegrationStore, tasks: TaskStore, projects: Proj
   def poll(r: RepoRow): Res[Int] =
     (ScmProvider.parse(r.provider), r.tokenEnc.flatMap(box.decrypt)) match
       case (Some(p), Some(token)) =>
+        (NetGuard.check(r.webUrl), r.apiUrl.filter(_.trim.nonEmpty).fold(IO.pure(Right(()): Either[String, Unit]))(NetGuard.check)).tupled.flatMap {
+          case (Left(m), _) => IO.pure(Left(Fail.Invalid(m)))
+          case (_, Left(m)) => IO.pure(Left(Fail.Invalid(m)))
+          case _ => pollWith(r, p, token)
+        }
+      case (None, _) => IO.pure(Left(Fail.Invalid("不明なプロバイダです")))
+      case (_, None) => IO.pure(Left(Fail.Invalid("アクセストークンが設定されていません")))
+
+  private def pollWith(r: RepoRow, p: ScmProvider, token: String): Res[Int] =
         val commits =
           if !r.allRepos then api.recentCommits(p, r.webUrl, r.apiUrl, r.name, r.branch, token)
           else
@@ -95,11 +134,11 @@ final class ScmService(integ: IntegrationStore, tasks: TaskStore, projects: Proj
             api.recentRepos(p, r.webUrl, r.apiUrl, Option(r.name.trim).filter(_.nonEmpty), token).flatMap(_.flatTraverse(n =>
               api.recentCommits(p, r.webUrl, r.apiUrl, n, None, token).map(_.map(_.copy(repo = Some(n)))).handleError(_ => Nil)))
         commits.attempt.flatMap {
-          case Left(e)   => IO.pure(Left(Fail.Invalid(s"コミットを取得できませんでした: ${e.getMessage.take(200)}")))
+          case Left(e)   =>
+            IO.println(s"[skea] scm poll ${r.id} failed: ${e.getMessage}") *>
+              IO.pure(Left(Fail.Invalid("コミットを取得できませんでした（URL・トークンを確認してください）")))
           case Right(cs) => linkAll(r, cs).flatTap(_ => integ.markPolled(r.id, cs.headOption.map(_.sha))).map(Right(_))
         }
-      case (None, _) => IO.pure(Left(Fail.Invalid("不明なプロバイダです")))
-      case (_, None) => IO.pure(Left(Fail.Invalid("アクセストークンが設定されていません")))
 
   /** トークンを登録したリポジトリを5分ごとに確認する（複数ノードでも1つだけが動く）。 */
   def pollLoop: IO[Nothing] =

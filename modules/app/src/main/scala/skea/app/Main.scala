@@ -64,8 +64,11 @@ object Config:
                 case (Some(i), Some(c), Some(s)) =>
                   Right(Some(OidcConfig(i, c, s, s"${pub.stripSuffix("/")}/auth/callback", opt("OIDC_GROUPS_CLAIM").getOrElse("groups"))))
                 case (None, None, None) if devLogin => Right(None)
+                case (None, None, None) => Left("OIDC_ISSUER・OIDC_CLIENT_ID・OIDC_CLIENT_SECRET を設定してください（開発中は DEV_LOGIN=true で省略できます）")
+                case _ if devLogin => Left("DEV_LOGIN=true は OIDC を設定していないときだけ使えます（本番では DEV_LOGIN を外してください）")
                 case _ => Left("OIDC_ISSUER・OIDC_CLIENT_ID・OIDC_CLIENT_SECRET を設定してください（開発中は DEV_LOGIN=true で省略できます）")
       secret <- opt("APP_SECRET") match
+                  case Some(s) if s.toLowerCase.contains("change-me") => Left("APP_SECRET が雛形の値のままです。ランダムな値にしてください")
                   case Some(s) if s.length >= 16 => Right(s)
                   case Some(_) => Left("APP_SECRET は16文字以上にしてください")
                   case None if devLogin => Right("skea-development-secret")
@@ -86,10 +89,10 @@ object Config:
           timezone = opt("TIMEZONE").getOrElse("Asia/Tokyo"),
           webhookAllowHttp = enabled("WEBHOOK_ALLOW_HTTP"),
           oauthClients = clients,
-          // SKIWI_URL・SKIWI_CLIENT_ID・SKIWI_CLIENT_SECRET（SKAWAU_* も同じ）
+          // SKIWI_URL・SKIWI_CLIENT_ID・SKIWI_CLIENT_SECRET・SKIWI_INTERNAL_URL（SKAWAU_*・STUI_* も同じ）
           linkServices = skea.api.LinkServiceRoutes.providers.flatMap { p =>
             val e = p.toUpperCase
-            (opt(s"${e}_URL"), opt(s"${e}_CLIENT_ID"), opt(s"${e}_CLIENT_SECRET")).mapN((u, id, sec) => skea.api.LinkService(p, u.stripSuffix("/"), id, sec))
+            (opt(s"${e}_URL"), opt(s"${e}_CLIENT_ID"), opt(s"${e}_CLIENT_SECRET")).mapN((u, id, sec) => skea.api.LinkService(p, u.stripSuffix("/"), id, sec, opt(s"${e}_INTERNAL_URL").map(_.stripSuffix("/"))))
           }
         ),
         staticDir = opt("STATIC_DIR"),
@@ -131,7 +134,8 @@ object Main extends IOApp.Simple:
         sess     = new SessionAuth(users, cfg.api)
         access   = new Access2(projects, tasks)
         hub      = new EventHub(tasks, projects, integ)
-        notifier = new NotifyService(activity, projects, users, sess, cfg.api)
+        tokens   = new IntegrationTokenStore(xa)
+        notifier = new NotifyService(activity, projects, users, sess, cfg.api, Some(new ChatNotifier(tokens, users, http, box, cfg.api)))
         svc      = new TaskService(tasks, projects, access, hub, notifier, cfg.api.adminGroups)
         hooks    = new WebhookService(integ, http, cfg.api)
         engine   = new AutomationEngine(integ, tasks, projects, users, activity, search, sess, access, svc, notifier, http, lock, cfg.api)
@@ -161,14 +165,14 @@ object Main extends IOApp.Simple:
             new TemplateRoutes(tplStore, tplSvc, imports, sess, access).routes <+>
             new StreamRoutes(feed, sess, access).routes <+>
             new OAuthRoutes(new OAuthStore(xa), tasks, projects, activity, sess, access, cfg.api).routes <+>
-            new LinkServiceRoutes(new IntegrationTokenStore(xa), http, box, cache, sess, access, cfg.api).routes
+            new LinkServiceRoutes(tokens, http, box, cache, sess, access, cfg.api).routes
         app = rest <+> new McpRoutes(rest, sess, cfg.api.publicUrl).routes
         all = cfg.staticDir.fold(app)(d => app <+> spa(d))
         _ <- EmberServerBuilder.default[IO]
                .withHost(ipv4"0.0.0.0")
                .withPort(Port.fromInt(cfg.port).getOrElse(port"8080"))
                .withShutdownTimeout(5.seconds)
-               .withHttpApp(ErrorHandling.Custom.recoverWith(all.orNotFound)(handler))
+               .withHttpApp(ErrorHandling.Custom.recoverWith(secured(all, cfg.api.maxUploadBytes).orNotFound)(handler))
                .build
         _ <- Resource.eval(IO.println(s"[skea] listening on :${cfg.port} (${cfg.api.publicUrl})"))
       yield ()).useForever
@@ -187,7 +191,7 @@ object Main extends IOApp.Simple:
       sql"select not pg_is_in_recovery()".query[Boolean].unique.transact(xa).timeout(3.seconds).attempt.flatMap {
         case Right(true)  => text(Status.Ok, s"ok $node")
         case Right(false) => text(Status.ServiceUnavailable, "database is read-only (not primary)")
-        case Left(e)      => text(Status.ServiceUnavailable, s"database unavailable: ${e.getMessage}")
+        case Left(e)      => IO.println(s"[skea] healthz: $e") *> text(Status.ServiceUnavailable, "database unavailable")
       }
   }
 
@@ -223,6 +227,29 @@ object Main extends IOApp.Simple:
   private def purgeLoop(users: UserStore, activity: ActivityStore, lock: JobLock): IO[Unit] =
     Periodic.run(10.minutes, 1.hour)(e => s"[skea] purge failed: $e")(lock.exclusive("purge", 50.minutes)(
       IO.realTimeInstant.flatMap(users.purgeExpired) *> activity.purgeOld(180).void))
+
+  /** すべての応答に付けるセキュリティ用のヘッダー（個別に付けたものは上書きしない）と、リクエスト本文の大きさの上限
+    * （ファイルのアップロード（multipart）は MAX_UPLOAD_MB（と multipart の見出しの分の余裕 1MB）、受信 Webhook は 10MB、それ以外は 2MB）。 */
+  private def secured(routes: HttpRoutes[IO], maxUpload: Long): HttpRoutes[IO] =
+    val defaults = List("X-Frame-Options" -> "DENY", "X-Content-Type-Options" -> "nosniff", "Referrer-Policy" -> "same-origin",
+      "Content-Security-Policy" -> "frame-ancestors 'none'; object-src 'none'; base-uri 'self'")
+    def limitOf(req: Request[IO]): Long =
+      if req.contentType.exists(_.mediaType.isMultipart) then maxUpload + 1024 * 1024
+      else if req.pathInfo.renderString.startsWith("/hooks/") then 10L * 1024 * 1024
+      else 2L * 1024 * 1024
+    HttpRoutes[IO] { req =>
+      val limit = limitOf(req)
+      val res =
+        if req.contentLength.exists(_ > limit) then cats.data.OptionT.some[IO](Response[IO](Status.PayloadTooLarge).withEntity(ErrorDto(
+          if limit >= maxUpload then s"ファイルが大きすぎます（上限 ${maxUpload / 1024 / 1024}MB）" else "送信する内容が大きすぎます")))
+        else
+          // Content-Length がない（chunked）ときも、上限を超えたら読むのをやめる
+          val body = req.body.chunks.mapAccumulate(0L)((n, c) => (n + c.size, c)).flatMap { (n, c) =>
+            if n > limit then fs2.Stream.raiseError[IO](new IllegalArgumentException("request body too large")) else fs2.Stream.chunk(c)
+          }
+          routes(req.withBodyStream(body))
+      res.map(r => defaults.foldLeft(r)((acc, h) => if acc.headers.get(org.typelevel.ci.CIString(h._1)).isDefined then acc else acc.putHeaders(h)))
+    }
 
   /** ビルド済みの画面の配信。存在しないパスは index.html（SPA）。 */
   private def spa(dir: String): HttpRoutes[IO] =

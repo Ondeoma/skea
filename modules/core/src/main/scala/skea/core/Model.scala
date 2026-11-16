@@ -65,6 +65,7 @@ final case class AuthSession(user: User, groups: List[Group], isAdmin: Boolean, 
   /** システム管理の操作ができるか（APIキーは admin スコープが必要）。 */
   def canAdmin: Boolean = isAdmin && (via match
     case AuthVia.ApiKey(_, scopes, _, _) => scopes.contains(Scope.Admin)
+    case AuthVia.Automation(_)           => false
     case _                                => true)
 
   /** キーでこのプロジェクトを操作できるか。 */

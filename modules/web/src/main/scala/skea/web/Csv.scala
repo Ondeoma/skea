@@ -32,4 +32,7 @@ object Csv {
 
   def quote(v: String): String = "\"" + v.replace("\"", "\"\"") + "\""
 
+  /** 書き出す値（= + - @ などで始まる値は、表計算ソフトで数式として動かないよう先頭に ' を付ける）. */
+  def cell(v: String): String = quote(if (v.nonEmpty && "=+-@\t\r".contains(v.charAt(0))) "'" + v else v)
+
 }

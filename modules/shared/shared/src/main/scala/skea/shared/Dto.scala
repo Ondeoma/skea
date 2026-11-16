@@ -243,7 +243,8 @@ final case class UpdateMeReq(name: Option[String], timezone: Option[String]) der
 
 final case class UpdateUserReq(isAdmin: Option[Boolean], disabled: Option[Boolean]) derives Encoder.AsObject, Decoder
 
-final case class NotifyPrefDto(kind: String, email: Boolean) derives Encoder.AsObject, Decoder
+/** 通知の種類ごとに、メール・チャット（stui）にも送るか. */
+final case class NotifyPrefDto(kind: String, email: Boolean, chat: Boolean) derives Encoder.AsObject, Decoder
 
 // ------------------------------------------------------------------ APIキー
 
@@ -487,12 +488,17 @@ final case class UnreadDto(unread: Int, mentions: Int) derives Encoder.AsObject,
 
 // ------------------------------------------------------------------ テンプレート・繰り返しタスク
 
-/** タスクのテンプレート. title の {{date}}・{{month}} は作成日（2026-11-15・2026-11）に置き換える. */
+/** タスクのテンプレート. title の {{date}}・{{month}} は作成日（2026-11-15・2026-11）に置き換える.
+  * personal は個人のテンプレート（どのプロジェクトでも使える. ステータス・担当者・ラベル・カスタムフィールドは持たない）. */
 final case class TemplateDto(id: UUID, name: String, title: String, description: Option[Json], statusId: Option[UUID], assigneeId: Option[UUID],
-    labelIds: List[UUID], fields: Map[String, Json], subtasks: List[String], dueInDays: Option[Int]) derives Encoder.AsObject, Decoder
+    labelIds: List[UUID], fields: Map[String, Json], subtasks: List[String], dueInDays: Option[Int], priority: Option[String],
+    taskType: Option[String], personal: Boolean) derives Encoder.AsObject, Decoder
 final case class TemplateReq(name: String, title: String, description: Option[Json] = None, statusId: Option[UUID] = None,
     assigneeId: Option[UUID] = None, labelIds: List[UUID] = Nil, fields: Map[String, Json] = Map.empty, subtasks: List[String] = Nil,
-    dueInDays: Option[Int] = None) derives Encoder.AsObject
+    dueInDays: Option[Int] = None, priority: Option[String] = None, taskType: Option[String] = None) derives Encoder.AsObject {
+  /** 個人のテンプレートでは、プロジェクトに属する値（ステータス・担当者・ラベル・カスタムフィールド）を外す. */
+  def personal: TemplateReq = copy(statusId = None, assigneeId = None, labelIds = Nil, fields = Map.empty)
+}
 object TemplateReq {
   private given Configuration = Configuration.default.withDefaults
   given Decoder[TemplateReq] = ConfiguredDecoder.derived[TemplateReq]
@@ -540,6 +546,20 @@ final case class SearchHitDto(task: TaskDto, projectKey: String, snippet: Option
 final case class SearchResultDto(hits: List[SearchHitDto], total: Int, error: Option[String]) derives Encoder.AsObject, Decoder
 final case class SavedFilterDto(id: UUID, name: String, query: String) derives Encoder.AsObject, Decoder
 final case class SavedFilterReq(name: String, query: String) derives Encoder.AsObject, Decoder
+
+/** ボードの絞り込み条件（空文字はその条件なし）. who は "me"・"none"・ユーザーID、label はラベルID、due は overdue・today・week・none. */
+final case class BoardCond(q: String = "", who: String = "", label: String = "", priority: String = "", taskType: String = "", due: String = "")
+    derives Encoder.AsObject {
+  def isEmpty: Boolean = this == BoardCond()
+}
+object BoardCond {
+  private given Configuration = Configuration.default.withDefaults
+  given Decoder[BoardCond] = ConfiguredDecoder.derived[BoardCond]
+  val dues: List[(String, String)] = List("overdue" -> "期限切れ", "today" -> "今日まで", "week" -> "7日以内", "none" -> "期日なし")
+}
+/** 保存したボードの絞り込み. shared はプロジェクトで共有, mine は自分が作ったもの（消せる）. */
+final case class BoardFilterDto(id: UUID, name: String, cond: BoardCond, shared: Boolean, mine: Boolean) derives Encoder.AsObject, Decoder
+final case class BoardFilterReq(name: String, cond: BoardCond, shared: Boolean) derives Encoder.AsObject, Decoder
 
 // ------------------------------------------------------------------ Webhook
 

@@ -55,7 +55,6 @@ def currentKey(href: String): String = {
   if (p.startsWith("/p/")) p.drop(3).takeWhile(_ != '/') else ""
 }
 
-def tabClass(key: String) = Router.href.mapC(h => if (currentKey(h) == key) "ptab active" else "ptab")
 
 def userName = Store.me.mapC(_.map(_.name).getOrElse(""))
 def meBrief = Store.me.mapC(_.map(m => UserBrief(m.id, m.name, m.avatarUrl)))
@@ -67,12 +66,7 @@ def loggedIn = Store.me.mapC(_.isDefined)
 <template>
   <header class="top">
     <RouterLink to="/" class="logo"><span class="brand"><img src="/logo.svg" alt="" width="28" height="28">skea</span></RouterLink>
-    <nav v-if="loggedIn" class="ptabs hide-sp">
-      <RouterLink v-for="p in Store.projects" :key="p.id" :to='"/p/" + p.key + "/board"' :class="tabClass(p.key)">
-        <span class="pkey">{{ p.key }}</span><span class="pname">{{ p.name }}</span>
-      </RouterLink>
-    </nav>
-    <div v-if="loggedIn" class="only-sp psel">
+    <div v-if="loggedIn" class="psel">
       <Combo :live="Some(Store.projects.mapC(_.map(p => Opt(p.key, p.key + &quot; &quot; + p.name))))" :shows="Some(Router.href.mapC(currentKey))"
         placeholder="プロジェクト…" :small="true" :onChange='k => Router.go("/p/" + k + "/board")' />
     </div>
@@ -80,9 +74,10 @@ def loggedIn = Store.me.mapC(_.isDefined)
     <form v-if="loggedIn" class="search hide-sp" @submit.prevent="search(s)">
       <input type="search" v-model="s.q" placeholder="タスクを検索（例: ログイン assignee:me）">
     </form>
-    <RouterLink v-if="loggedIn" to="/search" class="icon only-sp">🔍</RouterLink>
-    <RouterLink v-if="loggedIn" to="/notifications" class="icon bell">
-      🔔<span v-if="hasUnread" class="dot">{{ unreadLabel }}</span>
+    <RouterLink v-if="loggedIn" to="/search" class="only-sp"><span class="icon">🔍</span></RouterLink>
+    <!-- RouterLink の a には scoped の CSS が届かないので、中の span に当てる -->
+    <RouterLink v-if="loggedIn" to="/notifications">
+      <span class="icon bell" title="通知">🔔<span v-if="hasUnread" class="dot">{{ unreadLabel }}</span></span>
     </RouterLink>
     <div v-if="loggedIn" class="me">
       <button class="ghost me-btn" @click="s.menu := !s.menu.v"><Avatar :user="meBrief.v" :size="24" /><span class="hide-sp">{{ userName }}</span> ▾</button>
@@ -114,18 +109,13 @@ def loggedIn = Store.me.mapC(_.isDefined)
 .brand { font-weight: 800; font-size: 1.15rem; color: var(--accent); letter-spacing: .02em; display: inline-flex; align-items: center; gap: .4rem;
   white-space: nowrap; }
 .brand img { display: block; border-radius: 7px; }
-.ptabs { display: flex; gap: .2rem; overflow-x: auto; scrollbar-width: none; min-width: 0; flex: 0 1 auto; }
-.ptab { display: flex; gap: .35rem; align-items: baseline; padding: .3rem .65rem; border-radius: 7px; color: var(--fg); white-space: nowrap; font-size: .88rem; }
-.ptab:hover { background: var(--hover); text-decoration: none; }
-.ptab.active { background: var(--accent-weak); color: var(--accent); }
-.pkey { font-weight: 700; font-size: .78rem; }
-.pname { max-width: 10em; overflow: hidden; text-overflow: ellipsis; }
-.psel { max-width: 45vw; }
+/* プロジェクトの切り替え（オートコンプリート） */
+.psel { width: 16rem; max-width: 45vw; flex: 0 1 auto; }
 .spacer { flex: 1; }
 .search input { width: 300px; }
-.icon { font-size: 1.1rem; padding: .2rem .4rem; border-radius: 7px; color: var(--fg); position: relative; }
-.icon:hover { background: var(--hover); text-decoration: none; }
-.dot { position: absolute; top: -4px; right: -6px; background: var(--danger); color: #fff; border-radius: 999px; font-size: .62rem; padding: 0 .35rem; line-height: 1.4; }
+.icon { display: inline-block; font-size: 1.1rem; padding: .2rem .4rem; border-radius: 7px; color: var(--fg); position: relative; line-height: 1.2; }
+.icon:hover { background: var(--hover); }
+.dot { position: absolute; top: -2px; right: -4px; background: var(--danger); color: #fff; border-radius: 999px; font-size: .62rem; padding: 0 .35rem; line-height: 1.4; }
 .me { position: relative; }
 .menu { position: absolute; right: 0; top: 2.4rem; background: var(--bg); border: 1px solid var(--line); border-radius: 9px; box-shadow: var(--shadow);
   min-width: 200px; padding: .3rem; display: flex; flex-direction: column; }
