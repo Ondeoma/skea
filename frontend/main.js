@@ -1,14 +1,10 @@
 import './style.css'
 import './src/editor.css'
 import { createEditor } from './src/editor.js'
-import { startHighlight } from './src/highlight.js'
-import { squareThumb } from './src/image.js'
-import { startLinkTitles } from './src/links.js'
+import { highlight, loadLanguages, languagesReady } from './src/lowlight.js'
 
-// Scala.js の画面から使うエディタ（Tiptap）
+// Scala.js の画面から使うライブラリ（エディタの Tiptap、コードのハイライトの lowlight）
 window.skeaEditor = { create: createEditor }
-window.skeaImage = { squareThumb }
-window.skeaLinks = { start: startLinkTitles }
-startHighlight()
+window.skeaLowlight = { highlight, load: loadLanguages, ready: languagesReady }
 
 import 'scalajs:main.js'

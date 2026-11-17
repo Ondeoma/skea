@@ -74,4 +74,4 @@ skea 側に実装したもの（skea の `/oauth/*`）と同じ形にする。
   リンクの文字が URL のままなら「📘 タイトル」に置き換え、文字を書いてあるリンクはそのままにして、タイトルを補足として出す。
   編集中のエディタの中は書き換えない。
 
-skawau のファイル名を出す連携も同じ仕組み（`LinkServiceRoutes`・`frontend/src/links.js`）で動く。[docs/skawau-integration.md](skawau-integration.md) を参照。
+skawau のファイル名を出す連携も同じ仕組み（`LinkServiceRoutes`・web の `RichView.scala` の `LinkTitles`）で動く。[docs/skawau-integration.md](skawau-integration.md) を参照。

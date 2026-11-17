@@ -17,6 +17,7 @@ import skea.auth.{OidcClient, OidcConfig, SecretBox}
 import skea.db.*
 import skea.integrations.ScmApi
 import skea.notify.{SmtpConfig, SmtpMailer}
+import skea.observe.{HttpClientTelemetry, HttpTelemetry, Metrics, RumRoutes, Telemetry}
 import skea.shared.ErrorDto
 import skea.storage.{S3BlobStore, S3Config}
 
@@ -111,16 +112,25 @@ object Config:
 
 object Main extends IOApp.Simple:
 
+  // ログにトレースの ID・操作したユーザーを載せるため、IOLocal の文脈を Java のライブラリから見えるようにする
+  // （IORuntime を作る前に設定する必要がある. オブジェクトの初期化は main より先に動く）
+  Telemetry.prepare()
+
+  private val version = Option(getClass.getPackage.getImplementationVersion).orElse(sys.env.get("APP_VERSION")).getOrElse("dev")
+
   private given org.typelevel.log4cats.LoggerFactory[IO] = org.typelevel.log4cats.slf4j.Slf4jFactory.create[IO]
 
   def run: IO[Unit] =
     for
       cfg <- Config.load
       n   <- migrateWithRetry(cfg)
-      _   <- IO.println(s"[skea] database migrated ($n migration(s) applied); node ${cfg.nodeId}")
+      _   <- skea.observe.Log.println(s"[skea] database migrated ($n migration(s) applied); node ${cfg.nodeId}")
       _ <- (for
+        _     <- Telemetry.resource("skea", version, runtime)
         xa    <- Database.transactor(cfg.db)
-        http  <- EmberClientBuilder.default[IO].withTimeout(30.seconds).build
+        _     <- gauges(xa)
+        // 外への呼び出しもトレースに出す（traceparent を付けて送る）
+        http  <- EmberClientBuilder.default[IO].withTimeout(30.seconds).build.map(HttpClientTelemetry(_))
         users    = new UserStore(xa)
         projects = new ProjectStore(xa)
         tasks    = new TaskStore(xa)
@@ -135,7 +145,9 @@ object Main extends IOApp.Simple:
         access   = new Access2(projects, tasks)
         hub      = new EventHub(tasks, projects, integ)
         tokens   = new IntegrationTokenStore(xa)
-        notifier = new NotifyService(activity, projects, users, sess, cfg.api, Some(new ChatNotifier(tokens, users, http, box, cfg.api)))
+        pushStore = new skea.push.PushStore(xa)
+        push    <- Resource.eval(skea.push.PushService.create(pushStore, http, cfg.api.publicUrl, "skea"))
+        notifier = new NotifyService(activity, projects, users, sess, cfg.api, Some(new ChatNotifier(tokens, users, http, box, cfg.api)), Some(push))
         svc      = new TaskService(tasks, projects, access, hub, notifier, cfg.api.adminGroups)
         hooks    = new WebhookService(integ, http, cfg.api)
         engine   = new AutomationEngine(integ, tasks, projects, users, activity, search, sess, access, svc, notifier, http, lock, cfg.api)
@@ -165,16 +177,19 @@ object Main extends IOApp.Simple:
             new TemplateRoutes(tplStore, tplSvc, imports, sess, access).routes <+>
             new StreamRoutes(feed, sess, access).routes <+>
             new OAuthRoutes(new OAuthStore(xa), tasks, projects, activity, sess, access, cfg.api).routes <+>
-            new LinkServiceRoutes(tokens, http, box, cache, sess, access, cfg.api).routes
+            new LinkServiceRoutes(tokens, http, box, cache, sess, access, cfg.api).routes <+>
+            RumRoutes.routes <+>
+            new PushRoutes(pushStore, push, sess, access).routes
         app = rest <+> new McpRoutes(rest, sess, cfg.api.publicUrl).routes
         all = cfg.staticDir.fold(app)(d => app <+> spa(d))
+        httpApp <- HttpTelemetry(ErrorHandling.Custom.recoverWith(secured(all, cfg.api.maxUploadBytes).orNotFound)(handler), apiPaths.map("/" + _))
         _ <- EmberServerBuilder.default[IO]
                .withHost(ipv4"0.0.0.0")
                .withPort(Port.fromInt(cfg.port).getOrElse(port"8080"))
                .withShutdownTimeout(5.seconds)
-               .withHttpApp(ErrorHandling.Custom.recoverWith(secured(all, cfg.api.maxUploadBytes).orNotFound)(handler))
+               .withHttpApp(httpApp)
                .build
-        _ <- Resource.eval(IO.println(s"[skea] listening on :${cfg.port} (${cfg.api.publicUrl})"))
+        _ <- Resource.eval(skea.observe.Log.println(s"[skea] listening on :${cfg.port} (${cfg.api.publicUrl})"))
       yield ()).useForever
     yield ()
 
@@ -182,8 +197,25 @@ object Main extends IOApp.Simple:
   private def migrateWithRetry(cfg: AppConfig, attempt: Int = 1): IO[Int] =
     Database.migrate(cfg.db).handleErrorWith { e =>
       if attempt >= 60 then IO.raiseError(e)
-      else IO.println(s"[skea] database not ready (${e.getMessage.take(120)}); retry $attempt/60") *> IO.sleep(2.seconds) *> migrateWithRetry(cfg, attempt + 1)
+      else skea.observe.Log.println(s"[skea] database not ready (${e.getMessage.take(120)}); retry $attempt/60") *> IO.sleep(2.seconds) *> migrateWithRetry(cfg, attempt + 1)
     }
+
+  /** DB から定期的に読むメトリクス（skorimako のダッシュボード・アラート用）。 */
+  private def gauges(xa: doobie.Transactor[IO]): Resource[IO, Unit] =
+    def q(sqlText: doobie.Fragment): IO[Long] = sqlText.query[Long].unique.transact(xa)
+    // 未完了のタスク（削除・アーカイブしたプロジェクトのものは除く）
+    val open = fr"""from task t join status s on s.id = t.status_id join project p on p.id = t.project_id
+                    where t.deleted_at is null and not p.archived and s.category <> 'done'"""
+    List(
+      Metrics.gauge("skea.users.total", "有効なユーザーの数")(q(sql"select count(*) from app_user where not disabled")),
+      Metrics.gauge("skea.users.active_24h", "24時間以内にログインしたユーザーの数")(q(sql"select count(*) from app_user where last_login_at > now() - interval '24 hours'")),
+      Metrics.gauge("skea.sessions.active", "有効なセッションの数")(q(sql"select count(*) from session where expires_at > now()")),
+      Metrics.gauge("skea.tasks.open", "未完了のタスクの数")(q(fr"select count(*)" ++ open)),
+      Metrics.gauge("skea.tasks.overdue", "期日を過ぎた未完了のタスクの数")(q(fr"select count(*)" ++ open ++ fr"and t.due_date < current_date")),
+      Metrics.gauge("skea.sprints.active", "進行中のスプリントの数")(q(sql"select count(*) from sprint s join project p on p.id = s.project_id where s.state = 'active' and not p.archived")),
+      Metrics.gauge("skea.mail.outbox", "送信待ちのメールの数")(q(sql"select count(*) from mail_outbox where sent_at is null and not skipped")),
+      Metrics.gauge("skea.webhook.pending", "送信待ちの Webhook の数")(q(sql"select count(*) from webhook_delivery where done_at is null and not failed"))
+    ).sequence_
 
   /** ロードバランサー用のヘルスチェック。DB（プライマリ）に書けない状態なら 503。 */
   private def healthRoutes(xa: doobie.Transactor[IO], node: String): HttpRoutes[IO] = HttpRoutes.of[IO] {
@@ -191,7 +223,7 @@ object Main extends IOApp.Simple:
       sql"select not pg_is_in_recovery()".query[Boolean].unique.transact(xa).timeout(3.seconds).attempt.flatMap {
         case Right(true)  => text(Status.Ok, s"ok $node")
         case Right(false) => text(Status.ServiceUnavailable, "database is read-only (not primary)")
-        case Left(e)      => IO.println(s"[skea] healthz: $e") *> text(Status.ServiceUnavailable, "database unavailable")
+        case Left(e)      => skea.observe.Log.println(s"[skea] healthz: $e") *> text(Status.ServiceUnavailable, "database unavailable")
       }
   }
 
@@ -200,14 +232,14 @@ object Main extends IOApp.Simple:
 
   private def blobStore(cfg: AppConfig): Resource[IO, Option[skea.storage.BlobStore]] = cfg.s3 match
     case Some(c) => S3BlobStore.resource(c).evalTap(_.ensureBucket).map(Some(_))
-    case None    => Resource.eval(IO.println("[skea] WARNING: S3_ENDPOINT が未設定のため、添付ファイルは使えません").as(None))
+    case None    => Resource.eval(skea.observe.Log.println("[skea] WARNING: S3_ENDPOINT が未設定のため、添付ファイルは使えません").as(None))
 
   private def startupNotes(cfg: AppConfig): IO[Unit] =
-    IO.whenA(cfg.smtp.isEmpty)(IO.println("[skea] WARNING: SMTP_HOST が未設定のため、メールは送りません")) *>
-      IO.whenA(cfg.oidc.isEmpty)(IO.println("[skea] WARNING: OIDC が未設定です。開発用のログイン（DEV_LOGIN）を使います。本番では使わないでください"))
+    IO.whenA(cfg.smtp.isEmpty)(skea.observe.Log.println("[skea] WARNING: SMTP_HOST が未設定のため、メールは送りません")) *>
+      IO.whenA(cfg.oidc.isEmpty)(skea.observe.Log.println("[skea] WARNING: OIDC が未設定です。開発用のログイン（DEV_LOGIN）を使います。本番では使わないでください"))
 
   private val handler: PartialFunction[Throwable, IO[Response[IO]]] = { case e =>
-    IO.println(s"[skea] unhandled error: $e") *> InternalServerError(ErrorDto("サーバーでエラーが発生しました"))
+    IO(org.slf4j.LoggerFactory.getLogger("skea").error("unhandled error", e)) *> InternalServerError(ErrorDto("サーバーでエラーが発生しました"))
   }
 
   /** 期日が近い・過ぎたタスクを担当者に1日1回通知する（1時間ごとに確認）。 */
@@ -251,11 +283,14 @@ object Main extends IOApp.Simple:
       res.map(r => defaults.foldLeft(r)((acc, h) => if acc.headers.get(org.typelevel.ci.CIString(h._1)).isDefined then acc else acc.putHeaders(h)))
     }
 
+  /** バックエンドのパスの先頭（画面の index.html を返さない. トレース・アクセスログの対象）。 */
+  private val apiPaths = List("api", "auth", "hooks", "mcp", "oauth")
+
   /** ビルド済みの画面の配信。存在しないパスは index.html（SPA）。 */
   private def spa(dir: String): HttpRoutes[IO] =
     val files = fileService[IO](FileService.Config(dir))
     val index = HttpRoutes.of[IO] {
-      case req @ GET -> _ if !Set("api", "auth", "hooks", "mcp", "oauth").exists(p => req.pathInfo.renderString.startsWith("/" + p)) =>
+      case req @ GET -> _ if !apiPaths.exists(p => req.pathInfo.renderString.startsWith("/" + p)) =>
         StaticFile.fromPath(Path(dir) / "index.html", Some(req)).getOrElseF(NotFound())
     }
     HttpRoutes[IO] { req =>

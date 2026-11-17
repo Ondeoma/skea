@@ -22,7 +22,7 @@ final class EventHub(tasks: TaskStore, projects: ProjectStore, integ: Integratio
   def emit(op: Op, projectId: UUID, taskId: Option[UUID], kind: String, detail: Json): IO[Long] =
     for
       id <- tasks.event(projectId, taskId, Some(op.userId), op.via, kind, detail)
-      _  <- fanOut(op, projectId, taskId, kind, detail).handleErrorWith(e => IO.println(s"[skea] event fan-out failed ($kind): $e"))
+      _  <- fanOut(op, projectId, taskId, kind, detail).handleErrorWith(e => skea.observe.Log.println(s"[skea] event fan-out failed ($kind): $e"))
     yield id
 
   /** タスクに付くもの（リンク・依存関係・添付）が変わった（task.updated。changes に field を入れる）。 */
@@ -32,7 +32,7 @@ final class EventHub(tasks: TaskStore, projects: ProjectStore, integ: Integratio
   /** システムの操作（SCM など、操作者のいないもの）。 */
   def emitSystem(projectId: UUID, taskId: Option[UUID], via: String, kind: String, detail: Json): IO[Long] =
     tasks.event(projectId, taskId, None, via, kind, detail).flatTap(_ => fanOut(None, projectId, taskId, kind, detail, 0).handleErrorWith(e =>
-      IO.println(s"[skea] event fan-out failed ($kind): $e")))
+      skea.observe.Log.println(s"[skea] event fan-out failed ($kind): $e")))
 
   private def fanOut(op: Op, projectId: UUID, taskId: Option[UUID], kind: String, detail: Json): IO[Unit] =
     fanOut(Some(op.s.user), projectId, taskId, kind, detail, op.depth)
@@ -98,15 +98,15 @@ object EventHub:
     val withTask = !Set(EventKind.SprintCreated, EventKind.SprintStarted, EventKind.SprintCompleted, EventKind.TaskDeleted)(kind)
     payload(kind, Some(p), Option.when(withTask)(task), Some(actor), detail, now)
 
-/** 通知（画面内・メール・連携していればチャット（stui））。 */
+/** 通知（画面内・メール・PWA のプッシュ通知・連携していればチャット（stui））。 */
 final class NotifyService(activity: ActivityStore, projects: ProjectStore, users: UserStore, sessions: SessionAuth, cfg: ApiConfig,
-    chat: Option[ChatNotifier] = None):
+    chat: Option[ChatNotifier] = None, push: Option[skea.push.PushService] = None):
 
   /** users（操作した本人を除く）に通知する。そのプロジェクトを閲覧できない人には送らない。 */
   def send(kind: String, to: Set[UUID], actor: Option[UUID], projectId: UUID, taskId: Option[UUID], commentId: Option[UUID],
       title: String, body: String, link: String, mailDelay: Int = 0, dedupe: Option[String] = None): IO[Unit] =
     val targets = (to -- actor.toSet).toList
-    IO.whenA(targets.nonEmpty) {
+    IO.whenA(targets.nonEmpty)(skea.observe.Telemetry.span("notify.send", "kind" -> kind) {
       actor.flatTraverse(a => users.find(a).map(_.map(_.name))).flatMap { actorName =>
         val mailBody = List(
           actorName.fold("")(n => s"$n さんの操作です。\n\n"),
@@ -120,12 +120,16 @@ final class NotifyService(activity: ActivityStore, projects: ProjectStore, users
             case Some(_) =>
               activity.notify(uid, kind, Some(projectId), taskId, commentId, actor, title, body) *>
                 activity.enqueueMail(Some(uid), None, Some(projectId), s"[skea] $title", mailBody, dedupe.map(d => s"$d:$uid"), mailDelay) *>
+                skea.observe.Metrics.count("skea.notifications.sent", "kind" -> kind) *>
+                // この端末で受け取る設定（PWA のプッシュ通知）にしていれば、ブラウザを閉じていても知らせる（裏で送る）
+                push.traverse_(_.send(uid, skea.push.PushMessage(title, actorName.fold(body)(n => s"$n さん: $body").take(500), link,
+                  Some(s"${taskId.getOrElse(projectId)}:$kind"))).start.void) *>
                 // チャットへは裏で送る（遅れや失敗で操作を止めない）
                 chat.traverse_(_.send(uid, kind, title, actorName.fold(body)(n => s"$n さん: $body"), link).start.void)
           }
         }
       }
-    }.handleErrorWith(e => IO.println(s"[skea] notify failed: $e"))
+    }).handleErrorWith(e => skea.observe.Log.println(s"[skea] notify failed: $e"))
 
   /** メールの送信ワーカー（30秒ごと）。送信時点でまだ閲覧できるかを確かめる。 */
   def mailLoop(mailer: Option[Mailer]): IO[Nothing] =
@@ -142,7 +146,8 @@ final class NotifyService(activity: ActivityStore, projects: ProjectStore, users
                     val stillVisible = row.projectId.fold(IO.pure(true))(pid =>
                       sessions.sessionFor(uid).flatMap(_.fold(IO.pure(false))(s => projects.role(pid, s).map(_.isDefined))))
                     stillVisible.ifM(
-                      m.send(Mail(addr, name, row.subject, row.body)).as(OutboxResult.Sent),
+                      skea.observe.Telemetry.span("mail.send")(m.send(Mail(addr, name, row.subject, row.body))).as(OutboxResult.Sent)
+                        .flatTap(_ => skea.observe.Metrics.count("skea.mails.sent")),
                       IO.pure(OutboxResult.Skip("宛先がプロジェクトを閲覧できなくなりました"))
                     )
                 }
@@ -171,6 +176,10 @@ final class TaskService(tasks: TaskStore, projects: ProjectStore, access: Access
 
   /** タスクを作る。notify が false なら担当・メンションの通知を出さない（取り込み）。 */
   def create(op: Op, projectId: UUID, r: CreateTaskReq, notify: Boolean = true): Res[TaskDto] =
+    skea.observe.Telemetry.span("task.create", "project.id" -> projectId.toString)(createImpl(op, projectId, r, notify))
+      .flatTap(res => IO.whenA(res.isRight)(skea.observe.Metrics.count("skea.tasks.created", "via" -> op.via)))
+
+  private def createImpl(op: Op, projectId: UUID, r: CreateTaskReq, notify: Boolean): Res[TaskDto] =
     (needWrite(op), Dates.parse(r.startDate, "開始日"), Dates.parse(r.dueDate, "期日")).tupled match
       case Left(f) => IO.pure(Left(f))
       case Right(_) if r.title.trim.isEmpty => IO.pure(Left(Fail.Invalid("タイトルを入力してください")))
@@ -300,10 +309,13 @@ final class TaskService(tasks: TaskStore, projects: ProjectStore, access: Access
         sname = (id: UUID) => statuses.find(_.id == id).map(_.name).getOrElse("")
         _ <- hub.emit(op, a.projectId, Some(a.id), EventKind.TaskUpdated, detail)
         statusChanged = r.before.statusId != a.statusId
+        toCategory = statuses.find(_.id == a.statusId).map(_.category)
         _ <- IO.whenA(statusChanged)(hub.emit(op, a.projectId, Some(a.id), EventKind.StatusChanged,
                Json.obj("from" -> sname(r.before.statusId).asJson, "to" -> sname(a.statusId).asJson,
                  "fromCategory" -> statuses.find(_.id == r.before.statusId).map(_.category).asJson,
-                 "toCategory" -> statuses.find(_.id == a.statusId).map(_.category).asJson)).void)
+                 "toCategory" -> toCategory.asJson)).void *>
+               skea.observe.Metrics.count("skea.tasks.status_changed", "to" -> toCategory.getOrElse(""), "via" -> op.via) *>
+               IO.whenA(toCategory.contains("done"))(skea.observe.Metrics.count("skea.tasks.completed", "via" -> op.via)))
         watchers <- tasks.watchers(a.id)
         _ <- a.assigneeId.filter(_ => r.before.assigneeId != a.assigneeId).traverse_ { u =>
                tasks.watch(a.id, u) *> notifier.send(NotificationKind.Assigned, Set(u), Some(op.userId), a.projectId, Some(a.id), None,
@@ -353,7 +365,8 @@ final class TaskService(tasks: TaskStore, projects: ProjectStore, access: Access
     else if !op.s.canWrite then IO.pure(Left(Fail.Forbidden("このAPIキーは参照専用です")))
     else
       for
-        c <- tasks.addComment(task.id, Some(op.userId), doc, RichText.toPlain(doc), op.via)
+        c <- skea.observe.Telemetry.span("comment.add", "task.id" -> task.id.toString)(tasks.addComment(task.id, Some(op.userId), doc, RichText.toPlain(doc), op.via))
+        _ <- skea.observe.Metrics.count("skea.comments.added", "via" -> op.via)
         _ <- hub.emit(op, task.projectId, Some(task.id), EventKind.CommentAdded,
                Json.obj("commentId" -> c.id.asJson, "text" -> RichText.toPlain(doc).take(500).asJson))
         _ <- tasks.watch(task.id, op.userId).whenA(op.s.isSession)
@@ -402,6 +415,7 @@ final class TaskService(tasks: TaskStore, projects: ProjectStore, access: Access
           w <- tasks.addWorklog(task.id, op.userId, d, r.minutes, r.note.getOrElse("").trim)
           _ <- hub.emit(op, task.projectId, Some(task.id), EventKind.WorklogAdded,
                  Json.obj("worklogId" -> w.id.asJson, "minutes" -> r.minutes.asJson, "workDate" -> d.toString.asJson))
+          _ <- skea.observe.Metrics.count("skea.worklogs.added", "via" -> op.via) *> skea.observe.Metrics.add("skea.worklogs.minutes", r.minutes.toLong)
         yield Right(w)
 
   // ---------------------------------------------------------------- 一括

@@ -27,6 +27,7 @@ val routes: PathPatternRoutes = List(
 )
 
 def mounted(s: State): Unit = {
+  Fallback.install(routes)
   Api.clientConfig().foreach { c =>
     Store.config := Some(c)
     // skiwi・skawau と連携していれば、そのリンクに名前を出す
@@ -35,6 +36,7 @@ def mounted(s: State): Unit = {
   if (dom.window.location.pathname.startsWith("/login")) s.ready := true
   else Store.report(Api.me()) { me =>
     Store.me := Some(me)
+    Observe.setUser(me.id.toString)
     Store.loadProjects()
     Store.poll()
     Store.connect()
@@ -81,6 +83,7 @@ def loggedIn = Store.me.mapC(_.isDefined)
     </RouterLink>
     <div v-if="loggedIn" class="me">
       <button class="ghost me-btn" @click="s.menu := !s.menu.v"><Avatar :user="meBrief.v" :size="24" /><span class="hide-sp">{{ userName }}</span> ▾</button>
+      <div v-if="s.menu" class="menu-bg" @click="s.menu := false"></div>
       <div v-if="s.menu" class="menu" @click="s.menu := false">
         <RouterLink to="/worklogs">作業時間の一覧</RouterLink>
         <RouterLink to="/notifications">通知</RouterLink>
@@ -118,7 +121,6 @@ def loggedIn = Store.me.mapC(_.isDefined)
 .dot { position: absolute; top: -2px; right: -4px; background: var(--danger); color: #fff; border-radius: 999px; font-size: .62rem; padding: 0 .35rem; line-height: 1.4; }
 .me { position: relative; }
 .menu { position: absolute; right: 0; top: 2.4rem; background: var(--bg); border: 1px solid var(--line); border-radius: 9px; box-shadow: var(--shadow);
-  min-width: 200px; padding: .3rem; display: flex; flex-direction: column; }
-.menu a { padding: .45rem .7rem; border-radius: 6px; color: var(--fg); }
-.menu a:hover { background: var(--hover); text-decoration: none; }
+  min-width: 200px; padding: .3rem; display: flex; flex-direction: column; z-index: 200; }
+.menu-bg { position: fixed; inset: 0; z-index: 199; }
 </style>

@@ -106,6 +106,10 @@ java -cp 'dist/lib/*' skea.app.Main
 | `SKIWI_INTERNAL_URL`・`SKAWAU_INTERNAL_URL`・`STUI_INTERNAL_URL` | サーバーから連携先を呼ぶときの URL（省略時は `*_URL`。同じネットワークの中の URL を使う場合） |
 | `OAUTH_CLIENTS` | 認可を求める外部のサービス（skiwi など）。`[{"id":"skiwi","secret":"…（16文字以上）","redirectUri":"https://…/callback","name":"skiwi"}]` |
 | `NODE_ID` | ノード名（ログ・定期処理のリース） |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_HEADERS` | ログ・メトリクス・トレースの送り先（skorimako の URL と `Authorization=Bearer sko_…`（ingest のキー））。未設定なら送らない。そのほか OpenTelemetry の標準の `OTEL_*` が使える |
+| `LOG_FORMAT` / `LOG_LEVEL` | 標準出力のログの形（`text`（既定）・`json`）と水準（既定 `INFO`）。ログにはトレースの ID と操作したユーザーが付く |
+| `SKORIMAKO_RUM_TOKEN` / `SKORIMAKO_RUM_URL` / `SKORIMAKO_RUM_SAMPLE_RATE` | 画面のブラウザの観測（skorimako の RUM）。トークンは skorimako の管理の画面で登録したアプリのもの。URL を省略すると `SKORIMAKO_URL` |
+| `VAPID_SUBJECT` | プッシュ通知（PWA）の連絡先（`mailto:…` か `https://…`。省略すると `PUBLIC_URL`）。VAPID の鍵は初回の起動で作って DB に保存する |
 | `DEV_LOGIN` | 開発用のログインを有効にする（OIDC を設定しない場合のみ。OIDC と一緒に設定すると起動しない） |
 
 ## API・MCP

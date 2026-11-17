@@ -53,9 +53,9 @@ final class TemplateService(templates: TemplateStore, projects: ProjectStore, sv
         case (Some((tpl, TemplateOwner.Project(_))), Some(s)) =>
           instantiate(Op(s), tpl, r.projectId, now, r.activeSprint).flatMap {
             case Right(t) => templates.markRun(r.id, r.nextRun, next, Some(t.key)).void
-            case Left(f)  => IO.println(s"[skea] recurring task ${r.id} failed: ${f.message}") *> templates.markRun(r.id, r.nextRun, next, None).void
+            case Left(f)  => skea.observe.Log.println(s"[skea] recurring task ${r.id} failed: ${f.message}") *> templates.markRun(r.id, r.nextRun, next, None).void
           }
-        case _ => IO.println(s"[skea] recurring task ${r.id}: template or user not found") *> templates.markRun(r.id, r.nextRun, next, None).void
+        case _ => skea.observe.Log.println(s"[skea] recurring task ${r.id}: template or user not found") *> templates.markRun(r.id, r.nextRun, next, None).void
       }
     })
 

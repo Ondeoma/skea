@@ -35,7 +35,7 @@ final class EventFeed(tasks: TaskStore, topic: Topic[IO, FeedItem]):
           _   <- ns.traverse_((u, _) => topic.publish1(FeedItem.Notified(u)))
         yield (evs.lastOption.fold(last)(_._1), (since :: ns.map(_._2)).max)
       def go(last: Long, since: Instant): IO[Nothing] =
-        IO.sleep(1.second) *> step(last, since).handleErrorWith(e => IO.println(s"[skea] event feed failed: $e").as((last, since)))
+        IO.sleep(1.second) *> step(last, since).handleErrorWith(e => skea.observe.Log.println(s"[skea] event feed failed: $e").as((last, since)))
           .flatMap((l, s) => go(l, s))
       go(start, now)
     }
@@ -61,7 +61,9 @@ final class StreamRoutes(feed: EventFeed, val sessions: SessionAuth, val access:
             // 接続が切られないよう 20 秒ごとに空の行を送る
             val ping = Stream.awakeEvery[IO](20.seconds).as(ServerSentEvent(comment = Some("ping")))
             val body = Stream.emit(ServerSentEvent(retry = Some(5.seconds), comment = Some("hello"))) ++ events.merge(ping)
-            Ok(body).map(_.putHeaders("Cache-Control" -> "no-cache", "X-Accel-Buffering" -> "no"))
+            // 接続中の数（skorimako のメトリクス）
+            Ok(body.through(s => Stream.bracket(skea.observe.Metrics.upDown("skea.sse.connections", 1))(_ => skea.observe.Metrics.upDown("skea.sse.connections", -1)) >> s))
+              .map(_.putHeaders("Cache-Control" -> "no-cache", "X-Accel-Buffering" -> "no"))
         }
       }
   }

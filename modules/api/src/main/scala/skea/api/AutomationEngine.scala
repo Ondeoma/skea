@@ -171,7 +171,8 @@ final class AutomationEngine(
         if !matched then IO.pure("no_match")
         else runActions(run, actions).as(if run.log.exists(_.hcursor.get[String]("level").contains("error")) then "error" else "success")
             .handleError { e => run.add("error", s"実行に失敗しました: ${e.getMessage}"); "error" }
-      _ <- IO.whenA(status != "no_match")(integ.saveRun(r.id, taskId, status, Json.fromValues(run.log), started))
+      _ <- IO.whenA(status != "no_match")(integ.saveRun(r.id, taskId, status, Json.fromValues(run.log), started) *>
+             skea.observe.Metrics.count("skea.automation.runs", "status" -> status))
     yield ()
 
   private def changedFields(event: Json): List[String] =

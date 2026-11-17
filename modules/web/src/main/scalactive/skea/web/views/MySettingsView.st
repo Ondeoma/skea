@@ -8,10 +8,9 @@ import skea.shared.*
 
 import java.util.UUID
 import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
-import scala.scalajs.js
 import scala.util.{Failure, Success}
 
-// 個人設定: プロフィール・通知メール・APIキー（MCP）
+// 個人設定: プロフィール・通知（プッシュ通知・メール）・APIキー（MCP）
 case class State(name: RV[String] = RV(""),
                  tz: RV[String] = RV("Asia/Tokyo"),
                  prefs: RV[List[NotifyPrefDto]] = RV(Nil),
@@ -74,7 +73,7 @@ def uploadAvatar(s: State, e: dom.Event): Unit = {
   val input = e.target.asInstanceOf[dom.HTMLInputElement]
   Option(input.files).filter(_.length > 0).map(_(0)).foreach { file =>
     s.uploading := true
-    val thumb = dom.window.asInstanceOf[js.Dynamic].skeaImage.squareThumb(file, 256).asInstanceOf[js.Promise[dom.File]].toFuture
+    val thumb = Images.squareThumb(file, 256)
     thumb.flatMap(f => Api.sendFile[Json]("/api/me/avatar", f)).onComplete { r =>
       s.uploading := false
       input.value = ""
@@ -163,7 +162,8 @@ val personalNote: String = "自分だけが使うタスクのテンプレート�
     </section>
 
     <section class="panel">
-      <h2>メール通知</h2>
+      <h2>通知</h2>
+      <p><PushToggle /></p>
       <p class="muted small">画面内の通知はすべて届きます。メールでも受け取る種類を選んでください。</p>
       <div class="chips">
         <label v-for="p in s.prefs" class="chip"><input type="checkbox" :checked="p.email" @change="setPref(s, p.kind, Dom.checked(event))"> {{ NotificationKind.label(p.kind) }}</label>

@@ -54,5 +54,5 @@ skiwi 連携の取り決め（[skiwi-integration.md](skiwi-integration.md) の 2
 - **環境変数**: `SKAWAU_URL`（利用者が貼る画面の URL）、`SKAWAU_CLIENT_ID`、`SKAWAU_CLIENT_SECRET`。3つとも設定したときだけ使える。
   開発環境では `SKAWAU_URL=http://localhost:5176`（skawau の画面の開発サーバー。`/oauth`・`/api` を skawau のサーバーへ中継する）。
 - **エンドポイント**: skiwi と共通（`LinkServiceRoutes`）。`/api/integrations/skawau/{connect,callback,connection,titles}`。
-- **表示**: `frontend/src/links.js`。ファイル名の前に拡張子に応じたアイコン（📁 フォルダ、📝 文書、📊 表、📽️ スライド、📕 PDF、🖼️ 画像 など）を付ける。
+- **表示**: `modules/web/src/main/scala/skea/web/RichView.scala`（LinkTitles）。ファイル名の前に拡張子に応じたアイコン（📁 フォルダ、📝 文書、📊 表、📽️ スライド、📕 PDF、🖼️ 画像 など）を付ける。
   リンクの文字が URL のままならファイル名に置き換え、文字を書いてあるリンクはそのままにして、ファイル名を補足として出す。編集中のエディタの中は書き換えない。

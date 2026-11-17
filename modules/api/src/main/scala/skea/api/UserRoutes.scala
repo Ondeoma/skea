@@ -35,7 +35,7 @@ final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, activity: Act
     ResponseCookie(StateCookie, v, maxAge = Some(maxAge), path = Some("/auth"), httpOnly = true, secure = cfg.cookieSecure, sameSite = Some(SameSite.Lax))
 
   private def loggedIn(u: User, via: String): IO[ResponseCookie] =
-    sessions.issue(u).flatTap(_ => activity.audit(Some(u.id), via, "auth.login", None, Json.obj()))
+    sessions.issue(u).flatTap(_ => activity.audit(Some(u.id), via, "auth.login", None, Json.obj()) *> skea.observe.Metrics.count("skea.logins", "via" -> via))
 
   val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
     case req @ GET -> Root / "auth" / "login" =>

@@ -18,6 +18,11 @@ import java.nio.charset.StandardCharsets
 import java.util.UUID
 import scala.concurrent.duration.*
 
+/** 連携（Webhook・stui・SCM）の呼び出しの数（skorimako のメトリクス skea.integrations.calls）。 */
+object Integrations:
+  def called(integration: String, result: String): IO[Unit] =
+    skea.observe.Metrics.count("skea.integrations.calls", "integration" -> integration, "result" -> result)
+
 /** Webhook の送信（アウトボックスのワーカー）。本文に HMAC-SHA256 の署名を付ける。 */
 final class WebhookService(integ: IntegrationStore, http: Client[IO], cfg: ApiConfig):
 
@@ -37,14 +42,19 @@ final class WebhookService(integ: IntegrationStore, http: Client[IO], cfg: ApiCo
     // 宛先は送るたびに確かめる（名前解決の結果が変わっても内部へ送らない）
     NetGuard.check(req.uri).flatMap {
       case Left(m) => IO.pure((OutboxResult.Skip(m), None))
-      case Right(_) =>
+      case Right(_) => skea.observe.Telemetry.span("webhook.deliver", "webhook.event" -> d.event)(
         http.run(req).use(r => IO.pure(r.status.code)).timeout(15.seconds).attempt.map {
           case Right(c) if c >= 200 && c < 300 => (OutboxResult.Sent, Some(c))
           case Right(c) if c == 410            => (OutboxResult.Skip(s"HTTP $c"), Some(c))
           case Right(c)                        => (OutboxResult.Retry(s"HTTP $c"), Some(c))
           // 例外の文（内部のホスト名など）は返さない
           case Left(e)                         => (OutboxResult.Retry(s"接続できませんでした（${e.getClass.getSimpleName}）"), None)
-        }
+        })
+    }.flatTap { (r, _) =>
+      Integrations.called("webhook", r match
+        case OutboxResult.Sent     => "ok"
+        case _: OutboxResult.Retry => "retry"
+        case _                     => "skip")
     }
 
   def loop: IO[Nothing] =
@@ -68,13 +78,14 @@ final class ChatNotifier(tokens: IntegrationTokenStore, users: UserStore, http: 
           val req = Request[IO](Method.POST, Uri.unsafeFromString(s"${c.server}/api/apps/notify"))
             .withEntity(Json.obj("title" -> title.asJson, "text" -> text.take(2000).asJson, "url" -> s"${cfg.publicUrl}$link".asJson))
             .putHeaders(Authorization(Credentials.Token(AuthScheme.Bearer, token)))
-          http.run(req).use { r =>
-            if r.status == Status.Unauthorized then tokens.deleteToken(userId, Provider)
-            else IO.whenA(!r.status.isSuccess)(IO.println(s"[skea] stui notify: ${r.status.code}"))
-          }.timeout(10.seconds)
+          skea.observe.Telemetry.span("stui.notify", "kind" -> kind)(http.run(req).use { r =>
+            Integrations.called(Provider, if r.status.isSuccess then "ok" else "error") *>
+              (if r.status == Status.Unauthorized then tokens.deleteToken(userId, Provider)
+               else IO.whenA(!r.status.isSuccess)(skea.observe.Log.println(s"[skea] stui notify: ${r.status.code}")))
+          }.timeout(10.seconds))
         })
       })
-    }.handleErrorWith(e => IO.println(s"[skea] stui notify failed: $e"))
+    }.handleErrorWith(e => skea.observe.Log.println(s"[skea] stui notify failed: $e"))
 
 /** ソースコード管理との連携（Webhook の受信・ポーリング）。コミットメッセージのタスクIDでタスクにリンクする。 */
 final class ScmService(integ: IntegrationStore, tasks: TaskStore, projects: ProjectStore, hub: EventHub, api: ScmApi, box: SecretBox,
@@ -92,7 +103,7 @@ final class ScmService(integ: IntegrationStore, tasks: TaskStore, projects: Proj
           case Some(p) =>
             ScmWebhook.commits(p, new String(body, StandardCharsets.UTF_8)) match
               case Left(e)   => IO.pure(Left(Fail.Invalid(e)))
-              case Right(cs) => linkAll(r, cs).map(Right(_))
+              case Right(cs) => Integrations.called("scm.webhook", "ok") *> linkAll(r, cs).map(Right(_))
     }
 
   def linkAll(r: RepoRow, commits: List[ScmCommit]): IO[Int] =
@@ -126,7 +137,7 @@ final class ScmService(integ: IntegrationStore, tasks: TaskStore, projects: Proj
       case (None, _) => IO.pure(Left(Fail.Invalid("不明なプロバイダです")))
       case (_, None) => IO.pure(Left(Fail.Invalid("アクセストークンが設定されていません")))
 
-  private def pollWith(r: RepoRow, p: ScmProvider, token: String): Res[Int] =
+  private def pollWith(r: RepoRow, p: ScmProvider, token: String): Res[Int] = skea.observe.Telemetry.span("scm.poll", "scm.provider" -> r.provider) {
         val commits =
           if !r.allRepos then api.recentCommits(p, r.webUrl, r.apiUrl, r.name, r.branch, token)
           else
@@ -135,10 +146,11 @@ final class ScmService(integ: IntegrationStore, tasks: TaskStore, projects: Proj
               api.recentCommits(p, r.webUrl, r.apiUrl, n, None, token).map(_.map(_.copy(repo = Some(n)))).handleError(_ => Nil)))
         commits.attempt.flatMap {
           case Left(e)   =>
-            IO.println(s"[skea] scm poll ${r.id} failed: ${e.getMessage}") *>
+            Integrations.called("scm.poll", "error") *> skea.observe.Log.println(s"[skea] scm poll ${r.id} failed: ${e.getMessage}") *>
               IO.pure(Left(Fail.Invalid("コミットを取得できませんでした（URL・トークンを確認してください）")))
-          case Right(cs) => linkAll(r, cs).flatTap(_ => integ.markPolled(r.id, cs.headOption.map(_.sha))).map(Right(_))
+          case Right(cs) => Integrations.called("scm.poll", "ok") *> linkAll(r, cs).flatTap(_ => integ.markPolled(r.id, cs.headOption.map(_.sha))).map(Right(_))
         }
+  }
 
   /** トークンを登録したリポジトリを5分ごとに確認する（複数ノードでも1つだけが動く）。 */
   def pollLoop: IO[Nothing] =

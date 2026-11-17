@@ -207,7 +207,7 @@ final class SearchStore(xa: Transactor[IO], tasks: TaskStore) extends TxStore(xa
             else List.empty.pure[ConnectionIO]
         yield (exact.map(r => (r._1, r._2, r._3, false)) ++ fuzzy.map(r => (r._1, r._2, r._3, true)), total + fuzzy.headOption.map(_._4.toInt).getOrElse(0))
         tx(prog).attempt.flatMap {
-          case Left(e) => IO.println(s"[skea] search failed: ${e.getMessage}").as(Left("検索できませんでした。条件を見直してください"))
+          case Left(e) => skea.observe.Log.println(s"[skea] search failed: ${e.getMessage}").as(Left("検索できませんでした。条件を見直してください"))
           case Right((rows, total)) =>
             tasks.dtos(rows.map(_._1)).map { ds =>
               val m = ds.map(d => d.id -> d).toMap

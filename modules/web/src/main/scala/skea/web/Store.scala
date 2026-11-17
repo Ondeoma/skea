@@ -1,7 +1,5 @@
 package skea.web
 
-import io.circe.Json
-import io.circe.parser.parse
 import io.github.ondeoma.scalactive.components.ComponentManager.*
 import org.scalajs.dom
 import skea.shared.*
@@ -10,7 +8,6 @@ import java.util.UUID
 import scala.concurrent.Future
 import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
 import scala.scalajs.js
-import scala.scalajs.js.annotation.JSGlobal
 import scala.util.{Failure, Success}
 
 final case class Toast(id: Int, text: String, link: Option[String], error: Boolean)
@@ -252,70 +249,6 @@ object Fmt {
 
 }
 
-/** エディタ（frontend/src/editor.js の Tiptap）. */
-@js.native
-@JSGlobal("skeaEditor")
-private object EditorFacade extends js.Object {
-  def create(el: dom.Element, opts: js.Object): EditorHandle = js.native
-}
-
-@js.native
-trait EditorHandle extends js.Object {
-  def getJSON(): js.Any = js.native
-  def setJSON(j: js.Any): Unit = js.native
-  def isEmpty(): Boolean = js.native
-  def clear(): Unit = js.native
-  def focus(): Unit = js.native
-  def destroy(): Unit = js.native
-}
-
-object Editor {
-
-  def toJs(j: Json): js.Any = js.JSON.parse(j.noSpaces)
-
-  def fromJs(a: js.Any): Json = parse(js.JSON.stringify(a)).getOrElse(Json.Null)
-
-  /**
-   * エディタを作る. projectId を渡すと @メンションの候補をそのプロジェクトのメンバーから出す.
-   * taskId を渡すと画像・ファイルの貼り付けでタスクに添付する.
-   */
-  def create(el: dom.Element, content: Option[Json], placeholder: String, projectId: Option[UUID], taskId: Option[UUID],
-             onSubmit: () => Unit, autofocus: Boolean = false, onChange: Json => Unit = _ => ()): EditorHandle = {
-    // メンションの候補: 人と、まとめて届くグループ・役割（「グループ・3人」のように出す）
-    val mentions: js.Function1[String, js.Promise[js.Array[js.Object]]] = (q: String) => {
-      import scala.scalajs.js.JSConverters.*
-      val ql = q.toLowerCase
-      val people = projectId.fold(Future.successful(List.empty[UserBrief]))(Store.audience)
-      val groups = projectId.fold(Future.successful(List.empty[MentionGroupDto]))(p => Store.mentionGroups(p).recover(_ => Nil))
-      people.zip(groups).map { (us, gs) =>
-        (us.filter(u => ql.isEmpty || u.name.toLowerCase.contains(ql)).map(u => js.Dynamic.literal(id = u.id.toString, label = u.name)) ++
-          gs.filter(g => ql.isEmpty || g.name.toLowerCase.contains(ql)).map(g => js.Dynamic.literal(id = g.id, label = g.name, icon = "👥",
-            hint = s"${if (g.id.startsWith("r:")) "役割" else "グループ"}・${g.count}人")))
-          .map(_.asInstanceOf[js.Object]).toJSArray
-      }.toJSPromise
-    }
-    val upload: js.Any = taskId match {
-      case None => null
-      case Some(tid) =>
-        import scala.scalajs.js.JSConverters.*
-        val f: js.Function1[dom.File, js.Promise[js.Object]] = (file: dom.File) =>
-          Api.upload(tid, file).map(a => js.Dynamic.literal(url = a.url, name = a.fileName, image = a.contentType.startsWith("image/")).asInstanceOf[js.Object]).toJSPromise
-        f
-    }
-    val o = js.Dynamic.literal(
-      content = content.map(toJs).getOrElse(null),
-      placeholder = placeholder,
-      mentions = mentions,
-      upload = upload,
-      autofocus = autofocus,
-      onSubmit = (() => onSubmit()): js.Function0[Unit],
-      onChange = ((j: js.Any) => onChange(fromJs(j))): js.Function1[js.Any, Unit]
-    )
-    EditorFacade.create(el, o.asInstanceOf[js.Object])
-  }
-
-}
-
 /** ドラッグ中の一覧の行: タスクか、落とす位置の空き（gap）. */
 final case class DndRow(task: Option[TaskDto]) {
   def key: String = task.map(_.id.toString).getOrElse("gap")
@@ -465,15 +398,11 @@ object Dialog {
     if (ok) r.onOk(r.input.map(_.v).getOrElse("")) else r.onCancel()
   }
 
-  /** エディタ（JavaScript）から使う: window.skeaUi.prompt(message, default) → Promise(文字列 | null)、alert(message). */
-  def exposeToJs(): Unit = {
-    val prompt: js.Function2[String, String, js.Promise[js.Any]] = (message: String, default: String) =>
-      new js.Promise[js.Any]((resolve, _) =>
-        open(DialogReq(message, "OK", danger = false, Some(RV(Option(default).getOrElse(""))), Nil, cancel = true,
-          v => resolve(v), () => resolve(null))))
-    val alertF: js.Function1[String, Unit] = (m: String) => alert(m)
-    dom.window.asInstanceOf[js.Dynamic].skeaUi = js.Dynamic.literal(prompt = prompt, alert = alertF)
-  }
+  /** 文字の入力（エディタ用）. OK なら入力した値、キャンセルなら null の Promise. */
+  def promptJs(message: String, default: String): js.Promise[js.Any] =
+    new js.Promise[js.Any]((resolve, _) =>
+      open(DialogReq(message, "OK", danger = false, Some(RV(Option(default).getOrElse(""))), Nil, cancel = true,
+        v => resolve(v), () => resolve(null))))
 
 }
 
@@ -629,22 +558,3 @@ object Emojis {
 
 }
 
-/** 外部サービス（skiwi・skawau）へのリンクに名前を出す（frontend/src/links.js. 連携したサービスだけ動かす）. */
-object LinkTitles {
-
-  private var handles = Map.empty[String, js.Dynamic]
-
-  def start(svc: LinkServiceDto): Unit = if (svc.connected) handles.get(svc.provider) match {
-    case Some(h) => h.reset()
-    case None    => handles += svc.provider -> dom.window.asInstanceOf[js.Dynamic].skeaLinks.start(svc.provider, svc.url)
-  }
-
-  /** 連携しているサービスを問い合わせて動かす. */
-  def load(): scala.concurrent.Future[List[LinkServiceDto]] = {
-    import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
-    val f = Api.get[List[LinkServiceDto]]("/api/integrations/links")
-    f.foreach(_.foreach(start))
-    f
-  }
-
-}

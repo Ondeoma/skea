@@ -16,8 +16,11 @@ object Main {
     ScalactiveConfig.defaultTitle = Some("skea")
     Store.startSync()
     Theme.apply()
-    Dialog.exposeToJs()
     TouchDnd.install()
+    // 表示（.rich）のコードのハイライト、skorimako のブラウザの観測（設定があるときだけ）と、PWA（ホーム画面に追加・オフラインで開く・プッシュ通知）
+    Highlight.start()
+    Observe.start()
+    Pwa.register()
     App()(dom.document.body, AddMethod.appendS(IdSelector("app"))).init()
   }
 

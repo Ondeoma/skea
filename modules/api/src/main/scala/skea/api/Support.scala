@@ -163,11 +163,15 @@ trait RouteSupport extends Http4sDsl[IO]:
   protected def authed(req: Request[IO])(f: AuthSession => IO[Response[IO]]): IO[Response[IO]] =
     sessions.fromRequest(req).flatMap {
       case None => err(Status.Unauthorized, "ログインしてください")
-      case Some(s) if s.isSession && !safeMethods.contains(req.method) && !sameOrigin(req) =>
-        err(Status.Forbidden, "別のサイトからの要求は受け付けません")
-      case Some(s) if !s.canWrite && !safeMethods.contains(req.method) && !readOnlyPost(req) =>
-        err(Status.Forbidden, "このAPIキーは参照専用です（write スコープが必要です）")
-      case Some(s) => f(s)
+      case Some(s) =>
+        // 操作したユーザーを、トレース（スパンの属性）とこの中のログに載せる
+        skea.observe.Telemetry.withUser(s.user.id.toString, s.user.name) {
+          if s.isSession && !safeMethods.contains(req.method) && !sameOrigin(req) then
+            err(Status.Forbidden, "別のサイトからの要求は受け付けません")
+          else if !s.canWrite && !safeMethods.contains(req.method) && !readOnlyPost(req) then
+            err(Status.Forbidden, "このAPIキーは参照専用です（write スコープが必要です）")
+          else f(s)
+        }
     }
 
   /** システム管理者のみ（APIキーは admin スコープが必要）。 */
