@@ -113,6 +113,11 @@ object ApiCatalog:
     Endpoint("POST", "/api/repos/{repoId}/poll", "リポジトリのコミットを今すぐ取得"),
     Endpoint("GET", "/api/admin/users", "ユーザーの一覧（管理者）"),
     Endpoint("PATCH", "/api/admin/users/{userId}", "ユーザーを変える（管理者） {isAdmin?, disabled?}"),
+    Endpoint("GET", "/api/admin/agents", "エージェント専用アカウントとキーの一覧（管理者・画面からのみ）"),
+    Endpoint("POST", "/api/admin/agents", "エージェント専用アカウントを作る（管理者・画面からのみ） {name}"),
+    Endpoint("PATCH", "/api/admin/agents/{agentId}", "エージェント専用アカウントの名前の変更・無効化（管理者・画面からのみ） {name?, disabled?}"),
+    Endpoint("POST", "/api/admin/agents/{agentId}/keys", "エージェント専用アカウントのキーを発行（管理者・画面からのみ。admin スコープは不可） {name, scopes, projectIds?, expiresInDays?}"),
+    Endpoint("DELETE", "/api/admin/agents/{agentId}/keys/{keyId}", "エージェント専用アカウントのキーを失効（管理者・画面からのみ）"),
     Endpoint("GET", "/api/admin/audit", "監査ログ（管理者）")
   )
 
@@ -206,7 +211,8 @@ final class McpRoutes(api: HttpRoutes[IO], sessions: SessionAuth, publicUrl: Str
     yield (status.sequence, sprint.sequence, assignee.sequence, labels, parent.sequence, fields).mapN { (st, sp, as, lb, pa, fs) =>
       Json.fromFields(List(
         opt(a, "title").map("title" -> _.asJson),
-        opt(a, "description").map("description" -> _.asJson),
+        // 説明はエディタの文書（JSON）で持つので、Markdown を文書にする（文字列のままだと画面に出ない）
+        opt(a, "description").map(d => "description" -> RichText.fromMarkdown(d)),
         st.map("statusId" -> _.asJson),
         sp.map("sprintId" -> _),
         as.map(x => "assigneeId" -> x.asJson),

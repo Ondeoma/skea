@@ -42,14 +42,15 @@ object Config:
   private def enabled(name: String): Boolean    = opt(name).exists(_.equalsIgnoreCase("true"))
   private def required(name: String): Either[String, String] = opt(name).toRight(s"環境変数 $name を設定してください")
 
-  /** OAUTH_CLIENTS: [{"id":"skiwi","secret":"…","redirectUri":"https://…/callback","name":"skiwi"}] */
+  /** OAUTH_CLIENTS: [{"id":"skiwi","secret":"…","redirectUri":"https://…/callback","name":"skiwi","scopes":["read","write"]}]（scopes は省くと read だけ） */
   private def oauthClients: Either[String, List[skea.api.OAuthClient]] =
     opt("OAUTH_CLIENTS").fold(Right(Nil)) { s =>
       io.circe.parser.parse(s).flatMap(_.as[List[io.circe.Json]]).left.map(_ => "OAUTH_CLIENTS は JSON の配列で指定してください").flatMap(_.traverse { j =>
         val c = j.hcursor
         (c.get[String]("id"), c.get[String]("secret"), c.get[String]("redirectUri")).tupled.toOption
           .filter((id, sec, uri) => id.nonEmpty && sec.length >= 16 && (uri.startsWith("https://") || uri.startsWith("http://localhost")))
-          .map((id, sec, uri) => skea.api.OAuthClient(id, sec, uri, c.get[String]("name").getOrElse(id)))
+          .map((id, sec, uri) => skea.api.OAuthClient(id, sec, uri, c.get[String]("name").getOrElse(id),
+            c.get[List[String]]("scopes").toOption.map(_.filter(Set("read", "write"))).filter(_.nonEmpty).getOrElse(List("read"))))
           .toRight("OAUTH_CLIENTS の各要素には id・secret（16文字以上）・redirectUri（https://）を指定してください")
       })
     }

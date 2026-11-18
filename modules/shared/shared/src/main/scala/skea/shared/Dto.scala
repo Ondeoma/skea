@@ -265,6 +265,16 @@ final case class CreateApiKeyReq(name: String, scopes: List[String], projectIds:
     derives Encoder.AsObject, Decoder
 final case class CreatedApiKeyDto(key: String, info: ApiKeyDto) derives Encoder.AsObject, Decoder
 
+// ------------------------------------------------------------------ エージェント専用アカウント（管理者が作る、ログインしないアカウント）
+
+/** エージェント専用アカウントのキー（失効したものも出す。ハッシュは出さない）. */
+final case class AgentKeyDto(id: UUID, name: String, prefix: String, scopes: List[String], createdAt: Timestamp, lastUsedAt: Option[Timestamp],
+    expiresAt: Option[Timestamp], revoked: Boolean) derives Encoder.AsObject, Decoder
+final case class AgentAccountDto(id: UUID, name: String, disabled: Boolean, createdAt: Timestamp, keys: List[AgentKeyDto])
+    derives Encoder.AsObject, Decoder
+final case class CreateAgentReq(name: String) derives Encoder.AsObject, Decoder
+final case class UpdateAgentReq(name: Option[String], disabled: Option[Boolean]) derives Encoder.AsObject, Decoder
+
 // ------------------------------------------------------------------ プロジェクト
 
 final case class ProjectDto(id: UUID, key: String, name: String, description: String, lead: Option[UserBrief], archived: Boolean,

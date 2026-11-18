@@ -61,6 +61,10 @@ final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, activity: Act
                 case Left(e) =>
                   activity.audit(None, "web", "auth.denied", None, Json.obj("error" -> e.getMessage.asJson)) *>
                     err(Status.Unauthorized, "ログインできませんでした。もう一度お試しください")
+                case Right(id) if AgentAccounts.isAgent(id.sub) =>
+                  // エージェント専用アカウントの sub ではログインさせない
+                  activity.audit(None, "web", "auth.denied", None, Json.obj("error" -> "agent sub".asJson)) *>
+                    err(Status.Forbidden, "このアカウントではログインできません")
                 case Right(id) =>
                   for
                     u <- users.upsert(id.sub, id.name, id.email, id.picture)
@@ -102,7 +106,7 @@ final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, activity: Act
       Ok(ClientConfigDto(cfg.devLogin && oidc.isEmpty, cfg.version, attachments = true, mail = true, cfg.linkServices.map(_.provider)))
   }
 
-/** 自分の情報・APIキー・通知の設定、ユーザーの一覧、管理画面（ユーザー・監査ログ）。 */
+/** 自分の情報・APIキー・通知の設定、ユーザーの一覧、管理画面（ユーザー・エージェント専用アカウント・監査ログ）。 */
 final class UserRoutes(users: UserStore, projects: ProjectStore, activity: ActivityStore, blobs: Option[BlobStore], emoji: EmojiStore,
     val sessions: SessionAuth, val access: Access2) extends RouteSupport:
 
@@ -116,6 +120,37 @@ final class UserRoutes(users: UserStore, projects: ProjectStore, activity: Activ
 
   private def me(s: AuthSession): MeDto =
     MeDto(s.user.id, s.user.name, s.user.email, s.user.avatarUrl, s.isAdmin, s.user.timezone, s.viaString, s.scopeStrings)
+
+  /**
+   * APIキーを発行する（個人設定の自分のキー・管理画面のエージェント専用アカウントのキーで共通）。owner はキーの持ち主。
+   * adminDenied: admin スコープを求められたときに返す応答（None なら許す）。平文のキーはこの応答でだけ返す。
+   */
+  private def issueKey(owner: AuthSession, r: CreateApiKeyReq, adminDenied: Option[IO[Response[IO]]])(audit: ApiKeyDto => IO[Unit]): IO[Response[IO]] =
+    val scopes = r.scopes.map(_.trim.toLowerCase).distinct
+    if r.name.trim.isEmpty then err(Status.BadRequest, "名前を入力してください")
+    else if scopes.isEmpty || !scopes.forall(ApiScope.all.contains) then err(Status.BadRequest, "スコープは read / write / admin から選んでください")
+    else if scopes.contains(ApiScope.Admin) && adminDenied.isDefined then adminDenied.get
+    else
+      projects.visible(owner).flatMap { vis =>
+        val ps = r.projectIds.map(_.distinct.filter(vis.contains)).filter(_.nonEmpty)
+        if r.projectIds.exists(_.nonEmpty) && ps.isEmpty then err(Status.BadRequest, "プロジェクトを選んでください")
+        else
+          val (key, prefix) = ApiKeys.generate()
+          val exp = r.expiresInDays.filter(_ > 0).map(d => Instant.now().plusSeconds(d.toLong * 86400))
+          users.createKey(owner.user.id, r.name.trim, prefix, Crypto.sha256(key), scopes, ps, exp).flatMap(info =>
+            audit(info) *> Created(CreatedApiKeyDto(key, info)))
+      }
+
+  /** 管理画面のエージェント専用アカウントの操作（管理者・画面からのみ。APIキーでは管理できない）。 */
+  private def agentAdmin(req: Request[IO])(f: AuthSession => IO[Response[IO]]): IO[Response[IO]] =
+    admin(req)(s => if s.isSession then f(s) else err(Status.Forbidden, "この操作は画面からのみ行えます"))
+
+  /** id がエージェント専用アカウントのときだけ処理する（ほかのユーザーは 404）。 */
+  private def withAgent(id: UUID)(f: => IO[Response[IO]]): IO[Response[IO]] =
+    users.isAgent(id).ifM(f, err(Status.NotFound, "エージェント専用アカウントが見つかりません"))
+
+  private def agentAudit(s: AuthSession, action: String, target: UUID, detail: Json): IO[Unit] =
+    activity.audit(Some(s.user.id), s.viaString, action, Some(target.toString), detail)
 
   val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
     case req @ GET -> Root / "api" / "me" => authed(req)(s => Ok(me(s)))
@@ -135,24 +170,9 @@ final class UserRoutes(users: UserStore, projects: ProjectStore, activity: Activ
     case req @ GET -> Root / "api" / "me" / "api-keys" => sessionOnly(req)(s => users.keys(s.user.id).flatMap(Ok(_)))
 
     case req @ POST -> Root / "api" / "me" / "api-keys" =>
-      sessionOnly(req)(s => body[CreateApiKeyReq](req) { r =>
-        val scopes = r.scopes.map(_.trim.toLowerCase).distinct
-        if r.name.trim.isEmpty then err(Status.BadRequest, "名前を入力してください")
-        else if scopes.isEmpty || !scopes.forall(ApiScope.all.contains) then err(Status.BadRequest, "スコープは read / write / admin から選んでください")
-        else if scopes.contains(ApiScope.Admin) && !s.isAdmin then err(Status.Forbidden, "admin スコープは管理者だけが使えます")
-        else
-          projects.visible(s).flatMap { vis =>
-            val ps = r.projectIds.map(_.distinct.filter(vis.contains)).filter(_.nonEmpty)
-            if r.projectIds.exists(_.nonEmpty) && ps.isEmpty then err(Status.BadRequest, "プロジェクトを選んでください")
-            else
-              val (key, prefix) = ApiKeys.generate()
-              val exp = r.expiresInDays.filter(_ > 0).map(d => Instant.now().plusSeconds(d.toLong * 86400))
-              users.createKey(s.user.id, r.name.trim, prefix, Crypto.sha256(key), scopes, ps, exp).flatMap { info =>
-                activity.audit(Some(s.user.id), "web", "api_key.create", Some(info.id.toString), Json.obj("name" -> info.name.asJson, "scopes" -> scopes.asJson)) *>
-                  Created(CreatedApiKeyDto(key, info))
-              }
-          }
-      })
+      sessionOnly(req)(s => body[CreateApiKeyReq](req)(r =>
+        issueKey(s, r, Option.when(!s.isAdmin)(err(Status.Forbidden, "admin スコープは管理者だけが使えます")))(info =>
+          activity.audit(Some(s.user.id), "web", "api_key.create", Some(info.id.toString), Json.obj("name" -> info.name.asJson, "scopes" -> info.scopes.asJson)))))
 
     case req @ DELETE -> Root / "api" / "me" / "api-keys" / UuidVar(id) =>
       sessionOnly(req)(s => users.revokeKey(s.user.id, id).flatMap {
@@ -241,6 +261,39 @@ final class UserRoutes(users: UserStore, projects: ProjectStore, activity: Activ
           case false => err(Status.NotFound, "ユーザーが見つかりません")
         }
       })
+
+    // ---------------------------------------------------------------- エージェント専用アカウント（管理者）
+
+    case req @ GET -> Root / "api" / "admin" / "agents" => agentAdmin(req)(_ => users.agents.flatMap(Ok(_)))
+
+    case req @ POST -> Root / "api" / "admin" / "agents" =>
+      agentAdmin(req)(s => body[CreateAgentReq](req)(r => AgentAccounts.validName(r.name) match
+        case Left(m) => err(Status.BadRequest, m)
+        case Right(name) =>
+          users.createAgent(name).flatTap(id => agentAudit(s, "agent.create", id, Json.obj("name" -> name.asJson))).flatMap(id =>
+            users.agents.flatMap(as => as.find(_.id == id).fold(err(Status.NotFound, "エージェント専用アカウントが見つかりません"))(Created(_))))))
+
+    case req @ PATCH -> Root / "api" / "admin" / "agents" / UuidVar(id) =>
+      agentAdmin(req)(s => body[UpdateAgentReq](req)(r => r.name.traverse(AgentAccounts.validName) match
+        case Left(m) => err(Status.BadRequest, m)
+        case Right(name) => users.updateAgent(id, name, r.disabled).flatMap {
+            case true  => agentAudit(s, "agent.update", id, UpdateAgentReq(name, r.disabled).asJson) *> NoContent()
+            case false => err(Status.NotFound, "エージェント専用アカウントが見つかりません")
+          }))
+
+    case req @ POST -> Root / "api" / "admin" / "agents" / UuidVar(id) / "keys" =>
+      agentAdmin(req)(s => withAgent(id)(body[CreateApiKeyReq](req)(r => sessions.sessionFor(id).flatMap {
+        case None => err(Status.BadRequest, "無効にしたアカウントにはキーを発行できません")
+        case Some(agent) =>
+          issueKey(agent, r, Some(err(Status.BadRequest, "エージェント専用アカウントのキーに admin スコープは付けられません")))(info =>
+            agentAudit(s, "agent.key.create", id, Json.obj("key" -> info.id.asJson, "name" -> info.name.asJson, "scopes" -> info.scopes.asJson)))
+      })))
+
+    case req @ DELETE -> Root / "api" / "admin" / "agents" / UuidVar(id) / "keys" / UuidVar(kid) =>
+      agentAdmin(req)(s => withAgent(id)(users.revokeKey(id, kid).flatMap {
+        case true  => agentAudit(s, "agent.key.revoke", id, Json.obj("key" -> kid.asJson)) *> NoContent()
+        case false => err(Status.NotFound, "APIキーが見つかりません")
+      }))
 
     case req @ GET -> Root / "api" / "admin" / "audit" =>
       admin(req)(_ => activity.auditLog(param(req, "before").flatMap(_.toLongOption), param(req, "action"), intParam(req, "limit", 100, 500)).flatMap(Ok(_)))

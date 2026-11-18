@@ -18,8 +18,10 @@ final class UserStore(xa: Transactor[IO]) extends TxStore(xa):
 
   // ---------------------------------------------------------------- ユーザー
 
-  /** ログイン時に作成・更新する。 */
-  def upsert(sub: String, name: String, email: Option[String], avatar: Option[String]): IO[User] = tx(
+  /** ログイン時に作成・更新する。エージェント専用アカウントの sub ではログインさせない。 */
+  def upsert(sub: String, name: String, email: Option[String], avatar: Option[String]): IO[User] =
+    if AgentAccounts.isAgent(sub) then IO.raiseError(new IllegalArgumentException("エージェント専用アカウントではログインできません"))
+    else tx(
     sql"""insert into app_user (id, sub, name, email, avatar_url, last_login_at) values (${UUID.randomUUID()}, $sub, $name, $email, $avatar, now())
           on conflict (sub) do update set name = excluded.name, email = excluded.email,
             avatar_url = case when app_user.avatar_key is not null then app_user.avatar_url else excluded.avatar_url end,
@@ -102,6 +104,39 @@ final class UserStore(xa: Transactor[IO]) extends TxStore(xa):
     uuidOpt(t) match
       case Some(id) => sql"select id from app_user where id = $id".query[UUID].option
       case None => sql"select id from app_user where not disabled and (lower(email) = lower($t) or name = $t or sub = $t) order by last_login_at desc nulls last limit 1".query[UUID].option
+  }
+
+  // ---------------------------------------------------------------- エージェント専用アカウント
+
+  private val agentWhere = fr"sub like ${AgentAccounts.Prefix + "%"}"
+
+  /** 作る（メールなし・ログインしない）。 */
+  def createAgent(name: String): IO[UUID] = tx(
+    sql"insert into app_user (id, sub, name) values (${UUID.randomUUID()}, ${AgentAccounts.newSub()}, $name) returning id".query[UUID].unique
+  )
+
+  def isAgent(id: UUID): IO[Boolean] = tx((fr"select exists(select 1 from app_user where id = $id and" ++ agentWhere ++ fr")").query[Boolean].unique)
+
+  /** 一覧（キーは失効したものも含める）。 */
+  def agents: IO[List[AgentAccountDto]] = tx(
+    for
+      us <- (fr"select id, name, disabled, created_at from app_user where" ++ agentWhere ++ fr"order by name")
+              .query[(UUID, String, Boolean, Instant)].to[List]
+      ks <- (fr"""select k.user_id, k.id, k.name, k.prefix, k.scopes, k.created_at, k.last_used_at, k.expires_at, k.revoked_at is not null
+                  from api_key k join app_user u on u.id = k.user_id where""" ++ agentWhere ++ fr"order by k.created_at desc")
+              .query[(UUID, UUID, String, String, List[String], Instant, Option[Instant], Option[Instant], Boolean)].to[List]
+    yield {
+      val byUser = ks.groupMap(_._1)(k => AgentKeyDto(k._2, k._3, k._4, k._5, k._6, k._7, k._8, k._9))
+      us.map((id, n, d, c) => AgentAccountDto(id, n, d, c, byUser.getOrElse(id, Nil)))
+    }
+  )
+
+  /** 名前の変更・無効化（エージェント専用アカウントだけ）。 */
+  def updateAgent(id: UUID, name: Option[String], disabled: Option[Boolean]): IO[Boolean] = tx {
+    val sets = List(name.map(v => fr"name = $v"), disabled.map(v => fr"disabled = $v")).flatten
+    val where = fr"where id = $id and" ++ agentWhere
+    if sets.isEmpty then (fr"select count(*) from app_user" ++ where).query[Int].unique.map(_ > 0)
+    else (fr"update app_user" ++ Sql.set(sets) ++ where).update.run.map(_ > 0)
   }
 
   // ---------------------------------------------------------------- 通知の設定

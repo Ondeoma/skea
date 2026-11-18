@@ -39,7 +39,8 @@ final case class LinkService(provider: String, url: String, clientId: String, cl
   def server: String = internalUrl.getOrElse(url)
 
 /** 認可を求める外部のサービス（OAUTH_CLIENTS で登録する）。redirectUri は完全一致で照合する。 */
-final case class OAuthClient(id: String, secret: String, redirectUri: String, name: String)
+/** scopes はそのクライアントが求めてよいスコープ（read・write. 既定は read だけ）. */
+final case class OAuthClient(id: String, secret: String, redirectUri: String, name: String, scopes: List[String] = List("read"))
 
 /** 処理の失敗（HTTP の応答に変換する）。 */
 enum Fail:

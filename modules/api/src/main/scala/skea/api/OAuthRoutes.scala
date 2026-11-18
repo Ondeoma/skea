@@ -17,7 +17,7 @@ import java.util.UUID
 
 /**
  * 外部のサービス（skiwi など）への認可（OAuth 2.0 の認可コード + PKCE。RFC 6749・7636・7009）と、タスクの一括参照。
- * 発行するトークンは、そのユーザーのスコープ read の API キー（「<クライアント名> 連携」。API キーの画面から失効できる）。
+ * 発行するトークンは、そのユーザーの API キー（「<クライアント名> 連携」。スコープは求められたもの（read・クライアントに許していれば write）。API キーの画面から失効できる）。
  */
 final class OAuthRoutes(oauth: OAuthStore, tasks: TaskStore, projects: ProjectStore, activity: ActivityStore, val sessions: SessionAuth,
     val access: Access2, cfg: ApiConfig) extends RouteSupport:
@@ -58,6 +58,11 @@ final class OAuthRoutes(oauth: OAuthStore, tasks: TaskStore, projects: ProjectSt
   private def errorPage(msg: String): IO[Response[IO]] =
     page("認可できません", s"<h1>認可できません</h1><p>${Html.escape(msg)}</p><p class=\"muted\">連携元のサービスの設定を確認してください。</p>").map(_.withStatus(Status.BadRequest))
 
+  /** 求められたスコープ（なければ read）。クライアントに許していないものが含まれていれば None。 */
+  private def scopes(c: OAuthClient, requested: Option[String]): Option[List[String]] =
+    val rs = requested.map(_.split(' ').map(_.trim).filter(_.nonEmpty).toList.distinct).filter(_.nonEmpty).getOrElse(List(ApiScope.Read))
+    Option.when(rs.forall(c.scopes.contains))(rs)
+
   /** 認可の要求の確認（client_id・redirect_uri が不正ならリダイレクトしない）。 */
   private def validate(p: String => Option[String]): Either[IO[Response[IO]], (OAuthClient, String, Option[String], String)] =
     (p("client_id").flatMap(client), p("redirect_uri")) match
@@ -68,7 +73,7 @@ final class OAuthRoutes(oauth: OAuthStore, tasks: TaskStore, projects: ProjectSt
         if !p("response_type").contains("code") then Left(back(c.redirectUri, "error" -> Some("unsupported_response_type"), "state" -> state))
         else if !p("code_challenge_method").contains("S256") || !p("code_challenge").exists(_.matches("^[A-Za-z0-9_-]{43}$")) then
           Left(back(c.redirectUri, "error" -> Some("invalid_request"), "error_description" -> Some("PKCE（S256）が必要です"), "state" -> state))
-        else if p("scope").exists(_.split(' ').exists(_ != "read")) then Left(back(c.redirectUri, "error" -> Some("invalid_scope"), "state" -> state))
+        else if scopes(c, p("scope")).isEmpty then Left(back(c.redirectUri, "error" -> Some("invalid_scope"), "state" -> state))
         else Right((c, c.redirectUri, state, p("code_challenge").get))
 
   // ---------------------------------------------------------------- トークンの発行・失効（クライアント認証は Basic）
@@ -93,6 +98,7 @@ final class OAuthRoutes(oauth: OAuthStore, tasks: TaskStore, projects: ProjectSt
       validate(param(req, _)) match
         case Left(r) => r
         case Right((c, _, _, _)) =>
+          val write = scopes(c, param(req, "scope")).exists(_.contains(ApiScope.Write))
           sessions.fromRequest(req).flatMap {
             case None =>
               // ログインしてからこの画面に戻る
@@ -104,8 +110,8 @@ final class OAuthRoutes(oauth: OAuthStore, tasks: TaskStore, projects: ProjectSt
                 .flatMap(k => param(req, k).map(v => s"""<input type="hidden" name="$k" value="${Html.escape(v)}">""")).mkString
               val name = Html.escape(c.name)
               page(s"$name との連携", s"""<h1>$name との連携</h1>
-                |<p><b>$name</b> が、あなた（${Html.escape(s.user.name)}）の権限で skea のタスクを読み取ります。</p>
-                |<ul class="muted"><li>読み取りだけです（作成・変更・削除はしません）</li><li>あなたが見られるプロジェクトのタスクだけが対象です</li>
+                |<p><b>$name</b> が、あなた（${Html.escape(s.user.name)}）の権限で skea のタスクを${if write then "読み書き" else "読み取り"}します。</p>
+                |<ul class="muted">${if write then "<li>タスクの作成・変更・コメントを、あなたの名前で行います</li>" else "<li>読み取りだけです（作成・変更・削除はしません）</li>"}<li>あなたが見られるプロジェクトのタスクだけが対象です</li>
                 |<li>個人設定の「APIキー」から、いつでも連携をやめられます</li></ul>
                 |<form method="post" action="/oauth/authorize">$hidden<input type="hidden" name="csrf" value="$csrf">
                 |<div class="actions"><button type="submit" name="decision" value="deny">拒否する</button>
@@ -126,7 +132,7 @@ final class OAuthRoutes(oauth: OAuthStore, tasks: TaskStore, projects: ProjectSt
               case Some(_) if !csrfOk => errorPage("画面の有効期限が切れました。連携元の画面からやり直してください")
               case Some(s) if p("decision").contains("allow") =>
                 val code = Crypto.randomToken(32)
-                oauth.createCode(Crypto.sha256(code), OAuthCode(c.id, redirect, s.user.id, challenge, "read"), Instant.now().plusSeconds(CodeTtlSeconds)) *>
+                oauth.createCode(Crypto.sha256(code), OAuthCode(c.id, redirect, s.user.id, challenge, scopes(c, p("scope")).getOrElse(List(ApiScope.Read)).mkString(" ")), Instant.now().plusSeconds(CodeTtlSeconds)) *>
                   activity.audit(Some(s.user.id), "web", "oauth.authorize", Some(c.id), Json.obj()) *>
                   back(redirect, "code" -> Some(code), "state" -> state)
               case Some(_) => back(redirect, "error" -> Some("access_denied"), "state" -> state)
@@ -145,7 +151,8 @@ final class OAuthRoutes(oauth: OAuthStore, tasks: TaskStore, projects: ProjectSt
                 oauth.consumeCode(Crypto.sha256(code)).flatMap {
                   case Some(oc) if oc.clientId == c.id && oc.redirectUri == uri && Crypto.constantTimeEquals(oc.codeChallenge, Crypto.pkceChallenge(verifier)) =>
                     val (key, prefix) = ApiKeys.generate()
-                    oauth.replaceKey(oc.userId, c.id, s"${c.name} 連携", prefix, Crypto.sha256(key), List(ApiScope.Read)) *>
+                    oauth.replaceKey(oc.userId, c.id, s"${c.name} 連携", prefix, Crypto.sha256(key),
+                      oc.scope.split(' ').toList.filter(x => x == ApiScope.Read || x == ApiScope.Write).distinct.sorted) *>
                       activity.audit(Some(oc.userId), "oauth", "api_key.create", Some(c.id), Json.obj("client" -> c.id.asJson)) *>
                       Ok(Json.obj("access_token" -> key.asJson, "token_type" -> "Bearer".asJson, "scope" -> oc.scope.asJson))
                         .map(_.putHeaders("Cache-Control" -> "no-store", "Pragma" -> "no-cache"))

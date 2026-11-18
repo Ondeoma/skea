@@ -54,6 +54,23 @@ final case class User(id: UUID, sub: String, name: String, email: Option[String]
     disabled: Boolean, timezone: String)
 final case class Group(id: UUID, name: String)
 
+/**
+ * エージェント専用アカウント（外部の AI エージェントのサービス skakapo などが API キーで使う、ログインしないアカウント）。
+ * sub を `agent:<uuid>` にして見分ける（OIDC・開発用ログインはこの sub を作らない）。メールは持たない（IdP のユーザーに乗っ取られないように）。
+ */
+object AgentAccounts:
+  val Prefix = "agent:"
+  def isAgent(sub: String): Boolean = sub.startsWith(Prefix)
+  def newSub(): String = Prefix + UUID.randomUUID()
+
+  /** 表示名の確認（前後の空白を除いて 1〜60 文字、制御文字なし）。 */
+  def validName(s: String): Either[String, String] =
+    val n = s.trim
+    if n.isEmpty then Left("名前を入力してください")
+    else if n.length > 60 then Left("名前は 60 文字以内にしてください")
+    else if n.exists(_.isControl) then Left("名前に制御文字は使えません")
+    else Right(n)
+
 /** 認証手段。 */
 enum AuthVia:
   case Session

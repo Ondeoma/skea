@@ -110,7 +110,7 @@ java -cp 'dist/lib/*' skea.app.Main
 | `SKAWAU_URL`・`SKAWAU_CLIENT_ID`・`SKAWAU_CLIENT_SECRET` | skawau のファイル名を出す連携（skawau に skea をクライアントとして登録した値。[docs/skawau-integration.md](docs/skawau-integration.md)） |
 | `STUI_URL`・`STUI_CLIENT_ID`・`STUI_CLIENT_SECRET` | stui（チャット）に通知を送る連携（stui に skea をクライアントとして登録した値。[docs/stui-integration.md](docs/stui-integration.md)） |
 | `SKIWI_INTERNAL_URL`・`SKAWAU_INTERNAL_URL`・`STUI_INTERNAL_URL` | サーバーから連携先を呼ぶときの URL（省略時は `*_URL`。同じネットワークの中の URL を使う場合） |
-| `OAUTH_CLIENTS` | 認可を求める外部のサービス（skiwi など）。`[{"id":"skiwi","secret":"…（16文字以上）","redirectUri":"https://…/callback","name":"skiwi"}]` |
+| `OAUTH_CLIENTS` | 認可を求める外部のサービス（skiwi・skakapo など）。`[{"id":"skiwi","secret":"…（16文字以上）","redirectUri":"https://…/callback","name":"skiwi"}]`。書き込みも許すなら `"scopes":["read","write"]`（skakapo のエージェントが起票・コメントするとき. 省くと read だけ） |
 | `NODE_ID` | ノード名（ログ・定期処理のリース） |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_HEADERS` | ログ・メトリクス・トレースの送り先（skorimako の URL と `Authorization=Bearer sko_…`（ingest のキー））。未設定なら送らない。そのほか OpenTelemetry の標準の `OTEL_*` が使える |
 | `LOG_FORMAT` / `LOG_LEVEL` | 標準出力のログの形（`text`（既定）・`json`）と水準（既定 `INFO`）。ログにはトレースの ID と操作したユーザーが付く |
@@ -131,6 +131,23 @@ claude mcp add --transport http skea https://skea.example.com/mcp --header "Auth
 
 MCP のツール: `search_tasks`・`get_task`・`create_task`・`update_task`・`delete_task`・`add_comment`・`log_work`・`list_worklogs`・`get_board`・
 `get_project`・`list_projects`・`list_notifications`・`get_me`、および画面でできるすべての操作のための `list_api_endpoints`・`call_api`。
+
+### エージェント専用アカウント（skakapo などの AI エージェント用）
+
+外部の AI エージェントのサービス（skakapo など）に skea を使わせるための、ログインしないアカウントです。
+個人の APIキーと違い、特定の人の権限ではなく、このアカウント自身の権限で動きます。エージェントが行った作成・変更・コメントは、このアカウントの名前で記録されます。
+
+1. 管理者が「管理」→「エージェント」で、アカウントを作ります（例: `skakapo`）。
+2. 見せたい・書き込ませたいプロジェクトの「設定 → メンバー」で、ふつうのユーザーと同じようにこのアカウントをメンバーに追加します（閲覧・編集など）。
+3. 「キーを発行」でスコープ（`read`・`write`。`admin` は付けられません）と有効期限を選んで発行し、表示されたキーを
+   skakapo の管理画面の「サービス」→ skea →「エージェント専用アカウント」に貼り付けます。キーは発行したときに一度だけ表示されます。
+4. 使わなくなったら、キーを失効させるか、アカウントを無効にします（無効にすると、そのアカウントのキーはすべて使えなくなります）。
+
+- アカウントの `sub` は `agent:<uuid>`、メールは持ちません。OIDC・開発用のログインではこのアカウントになれません。
+- 管理の API（`/api/admin/agents`）は管理者が画面から（Cookie のセッションで）使うときだけ使えます。APIキーでは管理できません。
+  - `GET /api/admin/agents`・`POST /api/admin/agents {name}`・`PATCH /api/admin/agents/{id} {name?, disabled?}`
+  - `POST /api/admin/agents/{id}/keys {name, scopes, projectIds?, expiresInDays?}`・`DELETE /api/admin/agents/{id}/keys/{keyId}`
+- 操作は監査ログに `agent.create`・`agent.update`・`agent.key.create`・`agent.key.revoke` として残ります。
 
 ## 連携の設定
 
