@@ -32,13 +32,20 @@ final class WebhookService(integ: IntegrationStore, http: Client[IO], cfg: ApiCo
       Uri.fromString(t).left.map(_ => Fail.Invalid("URL が正しくありません")).map(_ => t)
     else Left(Fail.Invalid(if cfg.webhookAllowHttp then "URL は http(s):// で始めてください" else "URL は https:// で始めてください"))
 
-  def send(d: DeliveryRow): IO[(OutboxResult, Option[Int])] =
+  /**
+   * 送る要求。本文は payload.noSpaces そのもので、署名もこの本文で計算する。
+   * CirceEntityCodec を import しているので、文字のエンコーダーを明示しないと本文が JSON の文字列（"{\"event\":...}"）になる。
+   */
+  def request(d: DeliveryRow): Request[IO] =
     val body = d.payload.noSpaces
     val sig  = "sha256=" + Crypto.hmacHex(d.secret, body.getBytes(StandardCharsets.UTF_8))
-    val req = Request[IO](Method.POST, Uri.unsafeFromString(d.url))
-      .withEntity(body)
+    Request[IO](Method.POST, Uri.unsafeFromString(d.url))
+      .withEntity(body)(using EntityEncoder.stringEncoder)
       .withContentType(`Content-Type`(MediaType.application.json))
       .putHeaders("X-Skea-Event" -> d.event, "X-Skea-Delivery" -> d.id.toString, "X-Skea-Signature" -> sig, "User-Agent" -> "skea-webhook")
+
+  def send(d: DeliveryRow): IO[(OutboxResult, Option[Int])] =
+    val req = request(d)
     // 宛先は送るたびに確かめる（名前解決の結果が変わっても内部へ送らない）
     NetGuard.check(req.uri).flatMap {
       case Left(m) => IO.pure((OutboxResult.Skip(m), None))
