@@ -24,7 +24,7 @@ def pick(s: State, k: String): Unit = { s.kind := k; load(s) }
 
 def open(n: NotificationDto): Unit = {
   if (!n.read) Api.postUnit("/api/notifications/read", MarkReadReq(List(n.id)).asJson).foreach(_ => Store.poll())
-  n.taskKey.foreach(k => Router.go(s"/tasks/$k" + n.commentId.fold("")(c => s"#comment-$c")))
+  n.taskKey.foreach(k => Router.go(Store.taskLink(n.projectKey, k, n.commentId)))
 }
 
 def readAll(s: State): Unit =
@@ -40,6 +40,8 @@ def icon(k: String): String = k match {
   case NotificationKind.Status     => "🔄"
   case NotificationKind.Due        => "⏰"
   case NotificationKind.Automation => "⚡"
+  case NotificationKind.Request    => "🙋"
+  case NotificationKind.Shared     => "🔗"
   case _                           => "✏️"
 }
 def mentions = Store.unread.mapC(u => if (u.mentions > 0) s"メンション（${u.mentions}）" else "メンション")

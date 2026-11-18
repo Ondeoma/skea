@@ -11,6 +11,7 @@ case class Props(content: Option[Json] = None,
                  projectId: Option[UUID] = None,
                  taskId: Option[UUID] = None,
                  autofocus: Boolean = false,
+                 uploadUrl: Option[String] = None,
                  onReady: EditorHandle => Unit = _ => (),
                  onSubmit: Unit => Unit = _ => (),
                  onChange: Json => Unit = _ => ())
@@ -22,7 +23,8 @@ def initState() = State()
 
 def mounted(s: State, props: Props): Unit =
   s.el.foreach { el =>
-    val h = Editor.create(el, props.content, props.placeholder, props.projectId, props.taskId, () => props.onSubmit(()), props.autofocus, props.onChange)
+    val h = Editor.create(el, props.content, props.placeholder, props.projectId, props.taskId, () => props.onSubmit(()), props.autofocus, props.onChange,
+      props.uploadUrl)
     s.handle := Some(h)
     props.onReady(h)
   }

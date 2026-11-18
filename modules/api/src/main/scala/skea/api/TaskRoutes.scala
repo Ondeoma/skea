@@ -27,6 +27,7 @@ final class TaskRoutes(
     hub: EventHub,
     automation: AutomationEngine,
     blobs: Option[BlobStore],
+    files: Attachments,
     emoji: EmojiStore,
     val sessions: SessionAuth,
     val access: Access2,
@@ -68,20 +69,6 @@ final class TaskRoutes(
           case None    => err(Status.BadRequest, "使えない絵文字です（決まった絵文字か、登録したカスタム絵文字 :名前: を指定してください）")
         })
     })
-
-  private val inlineTypes = Set("image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf", "text/plain", "video/mp4",
-    "video/webm", "audio/mpeg", "audio/ogg", "audio/wav")
-
-  private def sha256Hex(p: FPath): IO[String] = IO.blocking {
-    val md = MessageDigest.getInstance("SHA-256")
-    val in = java.nio.file.Files.newInputStream(p.toNioPath)
-    try
-      val buf = new Array[Byte](64 * 1024)
-      var n   = in.read(buf)
-      while n > 0 do { md.update(buf, 0, n); n = in.read(buf) }
-    finally in.close()
-    md.digest().map(b => f"${b & 0xff}%02x").mkString
-  }
 
   val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
     case req @ GET -> Root / "api" / "tasks" / id =>
@@ -206,7 +193,7 @@ final class TaskRoutes(
 
     case req @ POST -> Root / "api" / "tasks" / id / "comments" =>
       withTask(req, id, Role.Edit)((s, t, _) => body[CommentReq](req)(r =>
-        respond(svc.addComment(Op(s), t, r.body))(c => tasks.deleteDraft(s.user.id, t.id) *> Created(c))))
+        respond(svc.addComment(Op(s), t, r.body, r.internal.getOrElse(false)))(c => tasks.deleteDraft(s.user.id, t.id) *> Created(c))))
 
     // ---------------------------------------------------------------- リアクション
     case req @ POST -> Root / "api" / "comments" / UuidVar(cid) / "reactions" => reaction(req, cid, on = true)
@@ -245,40 +232,15 @@ final class TaskRoutes(
       withTask(req, id, Role.View)((_, t, _) => tasks.attachments(t.id).flatMap(Ok(_)))
 
     case req @ POST -> Root / "api" / "tasks" / id / "attachments" =>
-      withTask(req, id, Role.Edit)((s, t, _) => blobs match
-        case None => err(Status.ServiceUnavailable, "添付ファイルの保存先（S3）が設定されていません")
-        case Some(store) =>
-          withUpload(req, cfg.maxUploadBytes) { up =>
-            val key = s"tasks/${t.id}/${UUID.randomUUID()}"
-            for
-              sha <- sha256Hex(up.path)
-              _   <- store.put(key, up.path, up.contentType)
-              id2 <- tasks.addAttachment(t.id, key, up.name, up.size, up.contentType, sha, s.user.id)
-              _   <- hub.emit(Op(s), t.projectId, Some(t.id), EventKind.AttachmentAdded, Json.obj("attachmentId" -> id2.asJson, "fileName" -> up.name.asJson))
-              me  <- users.find(s.user.id)
-              r   <- Created(AttachmentDto(id2, up.name, up.size, up.contentType, me.map(u => UserBrief(u.id, u.name, u.avatarUrl)),
-                       java.time.Instant.now(), s"/api/attachments/$id2"))
-            yield r
-          })
+      withTask(req, id, Role.Edit)((s, t, _) =>
+        if !files.available then err(Status.ServiceUnavailable, "添付ファイルの保存先（S3）が設定されていません")
+        else withUpload(req, cfg.maxUploadBytes)(up => files.save(Op(s), t, up).flatMap(_.fold(NotFound())(Created(_)))))
 
     case req @ GET -> Root / "api" / "attachments" / UuidVar(aid) =>
       authed(req)(s => tasks.attachment(aid).flatMap {
         case None => err(Status.NotFound, "添付ファイルが見つかりません")
         case Some((tid, key, name, ct, _)) =>
-          respond(access.task(s, tid.toString, Role.View))((_, _) => blobs.fold(err(Status.ServiceUnavailable, "保存先が設定されていません"))(store =>
-            store.get(key).flatMap {
-              case None => err(Status.NotFound, "ファイルの中身が見つかりません")
-              case Some((meta, bytes)) =>
-                val inline = inlineTypes.contains(ct)
-                val mt     = if inline then MediaType.parse(ct).getOrElse(MediaType.application.`octet-stream`) else MediaType.application.`octet-stream`
-                val hs = List[Header.ToRaw](
-                  `Content-Type`(mt),
-                  `Content-Disposition`(if inline then "inline" else "attachment", Map(CIString("filename*") -> name)),
-                  "X-Content-Type-Options" -> "nosniff",
-                  "Cache-Control" -> "private, max-age=3600"
-                ) ++ (if ct == "application/pdf" then Nil else List[Header.ToRaw]("Content-Security-Policy" -> "sandbox"))
-                IO.pure(Response[IO](Status.Ok).withEntity(Entity.stream(bytes, Some(meta.size))).putHeaders(hs*))
-            }))
+          respond(access.task(s, tid.toString, Role.View))((_, _) => files.download(key, name, ct))
       })
 
     case req @ DELETE -> Root / "api" / "attachments" / UuidVar(aid) =>

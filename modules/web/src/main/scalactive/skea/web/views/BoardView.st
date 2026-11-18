@@ -10,6 +10,7 @@ import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
 
 // カンバン: アクティブなスプリントのタスクをステータスの列に並べる（ドラッグで移動. クリックで詳細をモーダルで出す）
 case class State(board: RV[Option[BoardDto]] = RV(None),
+                 doneDays: RV[Option[Int]] = RV(None),
                  q: RV[String] = RV(""),
                  who: RV[String] = RV(""),
                  label: RV[String] = RV(""),
@@ -37,7 +38,11 @@ def mounted(s: State): Unit = {
   load(s)
   loadSaved(s)
   watch(Store.tick, false)((_, _) => load(s))
+  // ヘルプデスク: 完了したタスクをボードに出す日数（案内に出す）
+  if (Store.helpdesk.v) Api.get[HelpdeskSettingsDto](s"/api/projects/${Store.pid}/helpdesk").foreach(h => s.doneDays := Some(h.doneHideDays))
 }
+
+def doneNote(s: State) = s.doneDays.mapC(_.fold("")(d => s"完了して ${d} 日を過ぎたタスクは表示しません（スプリントは自動で管理）"))
 
 def statuses = Store.meta.mapC(_.map(_.statuses).getOrElse(Nil))
 def members = Store.meta.mapC(_.map(_.members.map(_.user)).getOrElse(Nil))
@@ -139,6 +144,8 @@ def foldIcon(s: State, ln: Lane) = s.folded.mapC(f => if (f.contains(ln.key)) "�
 def laneCount(s: State, ln: Lane) = computed { s.board.v.toList.flatMap(_.tasks).count(t => visible(s, t) && inLane(ln, t)).toString }
 def laneMode(s: State) = s.laneBy.mapC(_.nonEmpty)
 def colsClass(s: State) = s.laneBy.mapC(l => if (l.isEmpty) "cols" else "cols laned")
+/** 見出しの行とカードの行で列の幅をそろえる（中身の長さで列が広がらないよう、全体の最小幅を列の数で決める）. */
+def colsStyle = statuses.mapC(l => s"min-width: calc(${l.size} * 250px + ${math.max(0, l.size - 1)} * .8rem)")
 def zone(st: StatusDto, ln: Lane): String = st.id.toString + "|" + ln.key
 
 /** 列（とレーン）のタスク（絞り込みを反映）. 絞り込みの値も監視するため computed にする. */
@@ -218,7 +225,8 @@ def backlogLink: String = Store.meta.v.map(m => "/p/" + m.project.key + "/backlo
         <div v-if="goal(s).mapC(_.nonEmpty)" class="small muted">🎯 {{ goal(s) }}</div>
       </div>
       <span class="grow"></span>
-      <button v-if="Store.canEdit" class="small" @click="s.completing := true">スプリントを完了</button>
+      <span v-if="Store.helpdesk" class="muted small">{{ doneNote(s) }}</span>
+      <button v-if="computed { Store.canEdit.v && !Store.helpdesk.v }" class="small" @click="s.completing := true">スプリントを完了</button>
     </div>
     <div v-if="s.saved.mapC(_.nonEmpty)" class="saved">
       <span class="muted small">保存した条件</span>
@@ -250,7 +258,7 @@ def backlogLink: String = Store.meta.v.map(m => "/p/" + m.project.key + "/backlo
       <p><RouterLink :to="backlogLink">バックログ</RouterLink>でスプリントを作成・開始すると、ここにタスクが並びます。</p>
     </div>
     <div v-if="hasSprint(s)" class="board">
-      <div :class="colsClass(s)">
+      <div :class="colsClass(s)" :style="colsStyle">
         <header v-for="st in statuses" :key="st.id" class="col-head"><span class="dot" :style='"background:" + st.color'></span>{{ st.name }} <span class="muted">{{ count(s, st) }}</span></header>
       </div>
       <div v-for="ln in lanes(s)" :key="ln.key" class="lane">
@@ -261,7 +269,7 @@ def backlogLink: String = Store.meta.v.map(m => "/p/" + m.project.key + "/backlo
           <b v-else>{{ ln.title }}</b>
           <span class="muted small">{{ laneCount(s, ln) }}</span>
         </div>
-        <div v-if="isOpen(s, ln)" :class="colsClass(s)">
+        <div v-if="isOpen(s, ln)" :class="colsClass(s)" :style="colsStyle">
           <section v-for="st in statuses" :key="st.id" :class="colClass(st, ln)" @dragover="Dnd.over(zone(st, ln), event)" @drop="drop(s, st, ln, event)">
             <div class="cards">
               <div v-for="r in rows(s, st, ln)" :key="r.key" :class="Dnd.cls(r)" :data-task="r.id" :style="Dnd.gapStyle(r)"
@@ -313,7 +321,9 @@ def backlogLink: String = Store.meta.v.map(m => "/p/" + m.project.key + "/backlo
 .av { border: 2px solid transparent; border-radius: 50%; padding: 0; background: none; }
 .av.active { border-color: var(--accent); }
 .board { overflow-x: auto; padding-bottom: .5rem; }
-.cols { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(250px, 1fr); gap: .8rem; align-items: stretch; min-width: max-content; }
+.cols { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(250px, 1fr); gap: .8rem; align-items: stretch; }
+/* 中身（長いタイトル）で列が広がらないようにする（見出しの行とカードの行がずれないように） */
+.cols > * { min-width: 0; }
 .col-head { font-weight: 600; font-size: .85rem; padding: .3rem .5rem .4rem; display: flex; align-items: center; gap: .4rem; }
 .col { background: var(--col); border-radius: 10px; padding: .5rem; min-height: 60vh; border: 2px solid transparent; }
 .cols.laned .col { min-height: 70px; }

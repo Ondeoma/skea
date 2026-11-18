@@ -21,7 +21,9 @@ case class State(templates: RV[List[TemplateDto]] = RV(Nil),
                  priority: RV[String] = RV(""),
                  taskType: RV[String] = RV(""),
                  labels: RV[List[String]] = RV(Nil),
-                 fields: RV[Map[String, Json]] = RV(Map.empty),
+                 // カスタムフィールドの値. 画面の描き直しのきっかけにしない（入力のたびに入力欄が作り直されてフォーカスが外れるため）.
+                 // 入力欄（FieldInput）は開いたときにここから最初の値を読み、あとは自身で値を持つ
+                 fields: scala.collection.mutable.Map[String, Json] = scala.collection.mutable.Map.empty,
                  subtasks: RV[String] = RV(""),
                  due: RV[String] = RV(""))
 
@@ -41,7 +43,8 @@ def edit(s: State, t: Option[TemplateDto]): Unit = {
   s.priority := t.flatMap(_.priority).getOrElse("")
   s.taskType := t.flatMap(_.taskType).getOrElse("")
   s.labels := t.map(_.labelIds.map(_.toString)).getOrElse(Nil)
-  s.fields := t.map(_.fields).getOrElse(Map.empty)
+  s.fields.clear()
+  s.fields ++= t.map(_.fields).getOrElse(Map.empty)
   s.subtasks := t.map(_.subtasks.mkString("\n")).getOrElse("")
   s.due := t.flatMap(_.dueInDays).map(_.toString).getOrElse("")
   s.editing := Some(t)
@@ -51,7 +54,7 @@ def opt(v: String): Option[UUID] = Option(v).filter(_.nonEmpty).map(UUID.fromStr
 
 def save(s: State, props: Props): Unit = {
   val r = TemplateReq(s.name.v.trim, s.title.v.trim, s.desc.v.filterNot(_.isEmpty()).map(h => Editor.fromJs(h.getJSON())), opt(s.status.v),
-    opt(s.assignee.v), s.labels.v.map(UUID.fromString), s.fields.v.filterNot(_._2.isNull), s.subtasks.v.split("\n").toList.map(_.trim).filter(_.nonEmpty),
+    opt(s.assignee.v), s.labels.v.map(UUID.fromString), s.fields.toMap.filterNot(_._2.isNull), s.subtasks.v.split("\n").toList.map(_.trim).filter(_.nonEmpty),
     s.due.v.trim.toIntOption, Option(s.priority.v).filter(_.nonEmpty), Option(s.taskType.v).filter(_.nonEmpty))
   val f = s.editing.v.flatten match {
     case Some(t) => Api.putUnit(s"/api/templates/${t.id}", r.asJson)
@@ -73,7 +76,7 @@ def createFrom(t: TemplateDto): Unit =
     Store.changed()
   }
 
-def setField(s: State, f: CustomFieldDto, v: Json): Unit = s.fields := s.fields.v.updated(f.id.toString, v)
+def setField(s: State, f: CustomFieldDto, v: Json): Unit = s.fields(f.id.toString) = v
 
 def summary(t: TemplateDto): String =
   List(Some(t.title), t.taskType.map(TaskType.label), t.priority.map(p => "優先度 " + Priority.label(p)), t.dueInDays.map(d => s"期日 ${d}日後"),
@@ -127,7 +130,7 @@ def empty(s: State) = s.templates.mapC(_.isEmpty)
         </div>
         <div v-if="inProject(props)">
           <div v-for="f in fieldDefs" :key="f.id" class="field"><span>{{ f.name }}</span>
-            <FieldInput :field="f" :value="s.fields.v.get(f.id.toString)" :live="true" :onChange="v => setField(s, f, v)" />
+            <FieldInput :field="f" :value="s.fields.get(f.id.toString)" :live="true" :onChange="v => setField(s, f, v)" />
           </div>
         </div>
         <label class="field"><span>一緒に作るサブタスク（1行に1つ）</span><textarea v-model="s.subtasks" placeholder="資料を集める&#10;下書きを書く&#10;レビューを受ける"></textarea></label>

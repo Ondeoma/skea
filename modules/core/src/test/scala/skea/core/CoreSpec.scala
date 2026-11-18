@@ -141,3 +141,15 @@ class CoreSpec extends munit.FunSuite:
     assertEquals(Access.effective(isAdmin = true, None, Nil), Some(Role.Admin))
     assertEquals(Access.effective(isAdmin = false, None, Nil), None)
   }
+
+  test("Role: ヘルプデスクの\"ユーザ\"（requester）は閲覧より下で、エージェントではない") {
+    assert(Role.Requester < Role.View)
+    assert(!Role.Requester.isAgent && Role.View.isAgent)
+    assertEquals(Role.parse("requester"), Some(Role.Requester))
+    assertEquals(Access.effective(isAdmin = false, Some(Role.Requester), List(Role.View)), Some(Role.View))
+    // read スコープだけの APIキーでも、"ユーザ"の権限が閲覧に上がらない
+    val u = User(UUID.randomUUID(), "s", "n", None, None, false, false, "Asia/Tokyo")
+    val readOnly = AuthSession(u, Nil, isAdmin = false, AuthVia.ApiKey(UUID.randomUUID(), Set(Scope.Read), None))
+    assertEquals(Access.limit(readOnly, Role.Requester), Role.Requester)
+    assertEquals(Access.limit(readOnly, Role.Admin), Role.View)
+  }

@@ -45,13 +45,16 @@ def addGroup(s: State): Unit = if (s.group.v.trim.nonEmpty)
 
 def removeGroup(s: State, g: GroupRoleDto): Unit = Store.report(Api.delete(s"/api/projects/${Store.pid}/groups/${g.groupId}"))(_ => load(s))
 
-val roleOpts: List[Opt] = Roles.all.map(r => Opt(r, Roles.label(r)))
+/** ヘルプデスクのプロジェクトでは、問い合わせする"ユーザ"も選べる. */
+def roleOpts: List[Opt] =
+  (if (Store.meta.v.exists(_.project.helpdesk)) Roles.withRequester else Roles.all).map(r => Opt(r, Roles.label(r)))
 </script>
 
 <template>
   <section>
     <h2>メンバーと権限</h2>
     <p class="muted small">閲覧: 見るだけ ／ 編集: タスク・コメント・スプリントの操作 ／ 管理: このプロジェクトの設定・メンバー。システム管理者はすべてのプロジェクトを管理できます。</p>
+    <p v-if="Store.helpdesk" class="muted small">ヘルプデスク: 「ユーザ（問い合わせ）」は窓口の簡素な画面だけを使い、自分の問い合わせと共有されたタスクだけが見えます。閲覧以上の人が回答するエージェントです。</p>
     <form v-if="Store.isProjectAdmin" class="row" @submit.prevent="search(s)">
       <input type="search" v-model="s.q" placeholder="追加するユーザーを名前・メールで検索" class="grow">
       <Combo :bind="Some(s.role)" :options="roleOpts" />

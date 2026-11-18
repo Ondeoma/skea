@@ -35,11 +35,12 @@ def base(props: Props): String = "/p/" + props.key
     <div class="title"><span class="key">{{ props.key }}</span> <b>{{ name }}</b></div>
     <nav class="tabs subtabs">
       <RouterLink :to='base(props) + "/board"'>ボード</RouterLink>
-      <RouterLink :to='base(props) + "/backlog"'>バックログ</RouterLink>
+      <RouterLink v-if="Store.helpdesk.mapC(!_)" :to='base(props) + "/backlog"'>バックログ</RouterLink>
       <RouterLink :to='base(props) + "/list"'>一覧</RouterLink>
       <RouterLink :to='base(props) + "/gantt"'>ガント</RouterLink>
       <RouterLink :to='base(props) + "/activity"'>活動</RouterLink>
       <RouterLink :to='base(props) + "/settings/general"'>設定</RouterLink>
+      <RouterLink v-if="Store.helpdesk" :to='"/help/" + props.key'>窓口</RouterLink>
     </nav>
     <button v-if="Store.canEdit" class="primary small create" @click="create()">＋ タスク</button>
   </div>

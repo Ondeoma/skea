@@ -12,17 +12,23 @@ final case class ErrorDto(error: String) derives Encoder.AsObject, Decoder
 
 /** 権限とカテゴリなど、文字列で表す値. */
 object Roles {
+  /** ヘルプデスクの"ユーザ"（問い合わせする側）. 閲覧以上が"エージェント"（回答する側）. */
+  val Requester = "requester"
   val View = "view"
   val Edit = "edit"
   val Admin = "admin"
   val all: List[String] = List(View, Edit, Admin)
   def rank(r: String): Int = r match {
+    case Requester => 0
     case View  => 1
     case Edit  => 2
     case Admin => 3
-    case _     => 0
+    case _     => -1
   }
+  /** ヘルプデスクのプロジェクトで選べる権限（"ユーザ"を含む）. */
+  val withRequester: List[String] = Requester :: all
   def label(r: String): String = r match {
+    case Requester => "ユーザ（問い合わせ）"
     case View  => "閲覧"
     case Edit  => "編集"
     case Admin => "管理"
@@ -168,7 +174,10 @@ object NotificationKind {
   val Status = "status"
   val Due = "due"
   val Automation = "automation"
-  val all: List[String] = List(Mention, Assigned, Comment, Updated, Status, Due, Automation)
+  /** ヘルプデスク: 新しい問い合わせ（エージェントへ）と、タスクの共有（"ユーザ"へ）. */
+  val Request = "request"
+  val Shared = "shared"
+  val all: List[String] = List(Mention, Assigned, Comment, Updated, Status, Due, Automation, Request, Shared)
   def label(k: String): String = k match {
     case Mention    => "メンション"
     case Assigned   => "担当"
@@ -177,6 +186,8 @@ object NotificationKind {
     case Status     => "ステータス"
     case Due        => "期限"
     case Automation => "自動化"
+    case Request    => "問い合わせ"
+    case Shared     => "共有"
     case _          => k
   }
 }
@@ -257,7 +268,7 @@ final case class CreatedApiKeyDto(key: String, info: ApiKeyDto) derives Encoder.
 // ------------------------------------------------------------------ プロジェクト
 
 final case class ProjectDto(id: UUID, key: String, name: String, description: String, lead: Option[UserBrief], archived: Boolean,
-    role: String, createdAt: Timestamp) derives Encoder.AsObject, Decoder
+    role: String, createdAt: Timestamp, helpdesk: Boolean) derives Encoder.AsObject, Decoder
 final case class CreateProjectReq(key: String, name: String, description: Option[String]) derives Encoder.AsObject, Decoder
 final case class UpdateProjectReq(name: Option[String], description: Option[String], leadId: Option[UUID], archived: Option[Boolean])
     derives Encoder.AsObject, Decoder
@@ -280,9 +291,11 @@ final case class StatusReq(name: String, category: String, color: Option[String]
 final case class LabelDto(id: UUID, name: String, color: String) derives Encoder.AsObject, Decoder
 final case class LabelReq(name: String, color: Option[String]) derives Encoder.AsObject, Decoder
 
-final case class CustomFieldDto(id: UUID, name: String, kind: String, options: List[String], required: Boolean, position: Int)
-    derives Encoder.AsObject, Decoder
-final case class CustomFieldReq(name: String, kind: String, options: List[String], required: Boolean) derives Encoder.AsObject, Decoder
+/** カスタムフィールド. helpForm ならヘルプデスクの窓口の「新しい問い合わせ」に出し（helpHint はその入力のヒント）、"ユーザ"に値を見せる. */
+final case class CustomFieldDto(id: UUID, name: String, kind: String, options: List[String], required: Boolean, position: Int,
+    helpForm: Boolean = false, helpHint: String = "") derives Encoder.AsObject, Decoder
+final case class CustomFieldReq(name: String, kind: String, options: List[String], required: Boolean, helpForm: Option[Boolean] = None,
+    helpHint: Option[String] = None) derives Encoder.AsObject, Decoder
 
 final case class SprintDto(id: UUID, projectId: UUID, name: String, goal: String, state: String, startDate: Option[String],
     endDate: Option[String], position: Int, completedAt: Option[Timestamp]) derives Encoder.AsObject, Decoder
@@ -429,8 +442,9 @@ final case class MilestoneReq(name: String, date: String, color: Option[String])
 // ------------------------------------------------------------------ コメント・作業時間
 
 final case class CommentDto(id: UUID, taskId: UUID, author: Option[UserBrief], body: Json, html: String, via: String,
-    createdAt: Timestamp, updatedAt: Timestamp, reactions: List[ReactionDto]) derives Encoder.AsObject, Decoder
-final case class CommentReq(body: Json) derives Encoder.AsObject, Decoder
+    createdAt: Timestamp, updatedAt: Timestamp, reactions: List[ReactionDto], internal: Boolean) derives Encoder.AsObject, Decoder
+/** internal はエージェントだけに見える内部コメント（ヘルプデスク）. */
+final case class CommentReq(body: Json, internal: Option[Boolean] = None) derives Encoder.AsObject, Decoder
 
 /** コメントへのリアクション（絵文字と、付けた人）. */
 final case class ReactionDto(emoji: String, users: List[UserBrief]) derives Encoder.AsObject, Decoder
@@ -604,3 +618,99 @@ final case class LinkTitleDto(id: UUID, title: String, icon: Option[String]) der
 /** 見られるものだけ. connected が false なら連携が切れている. */
 final case class LinkTitlesDto(items: List[LinkTitleDto], connected: Boolean) derives Encoder.AsObject, Decoder
 final case class LinkTitlesReq(ids: List[UUID]) derives Encoder.AsObject, Decoder
+
+// ------------------------------------------------------------------ ヘルプデスク
+
+/**
+ * ヘルプデスクの設定（プロジェクトの管理者）. guestDomains が空なら、どのメールアドレスでもゲスト登録できる.
+ * ヘルプデスクのプロジェクトは、すべてのタスクを1つのアクティブスプリントに置き（自動で管理）、ボードでは完了して doneHideDays 日を過ぎたタスクを出さない.
+ */
+final case class HelpdeskSettingsDto(helpdesk: Boolean, guestSignup: Boolean, guestDomains: List[String], groups: List[RequesterGroupDto],
+    requesters: List[UserBrief], doneHideDays: Int) derives Encoder.AsObject, Decoder
+final case class HelpdeskSettingsReq(helpdesk: Boolean, guestSignup: Boolean, guestDomains: List[String], doneHideDays: Option[Int] = None)
+    derives Encoder.AsObject, Decoder
+
+/**
+ * "ユーザ"のグループ（プロジェクトごと. 親に共有したタスクは子のメンバーにも見える）.
+ * domain はメールのドメイン（空なら親のものを引き継ぐ）. 同じドメインのメールアドレスの"ユーザ"は、自分の問い合わせをこのグループに共有できる.
+ */
+final case class RequesterGroupDto(id: UUID, parentId: Option[UUID], name: String, members: List[UserBrief], domain: Option[String])
+    derives Encoder.AsObject, Decoder
+final case class RequesterGroupReq(name: String, parentId: Option[UUID], domain: Option[String] = None) derives Encoder.AsObject, Decoder
+
+/** "ユーザ"のグループの階層の補助（サーバーと画面で共通）. */
+object RequesterGroups {
+  def normalizeDomain(d: String): String = d.trim.toLowerCase.stripPrefix("@")
+
+  def emailDomain(email: Option[String]): Option[String] =
+    email.map(_.trim.toLowerCase).filter(_.contains("@")).map(_.split('@').last).filter(_.nonEmpty)
+
+  /** 実際に効くドメイン（自分に指定がなければ、近い祖先のもの）. */
+  def effectiveDomain(gs: List[RequesterGroupDto], g: RequesterGroupDto): Option[String] = {
+    def up(x: RequesterGroupDto, seen: Set[UUID]): Option[String] =
+      x.domain.filter(_.nonEmpty).orElse(x.parentId.filterNot(seen).flatMap(p => gs.find(_.id == p)).flatMap(pp => up(pp, seen + x.id)))
+    up(g, Set.empty)
+  }
+
+  /** このメールアドレスの"ユーザ"が共有できるグループ（実効のドメインがメールのドメインと同じもの）. */
+  def shareable(gs: List[RequesterGroupDto], email: Option[String]): List[RequesterGroupDto] =
+    emailDomain(email).fold(List.empty[RequesterGroupDto])(d => gs.filter(g => effectiveDomain(gs, g).contains(d)))
+
+  /** 「A社 › 経理部」. */
+  def path(gs: List[RequesterGroupDto], g: RequesterGroupDto): String = {
+    def up(x: RequesterGroupDto, seen: Set[UUID]): List[String] =
+      x.name :: x.parentId.filterNot(seen).flatMap(p => gs.find(_.id == p)).fold(List.empty[String])(pp => up(pp, seen + x.id))
+    up(g, Set.empty).reverse.mkString(" › ")
+  }
+}
+final case class GroupMemberReq(userId: UUID) derives Encoder.AsObject, Decoder
+
+/** タスクの共有先（"ユーザ"のグループと個人）. */
+final case class TaskSharesDto(groups: List[RequesterGroupDto], users: List[UserBrief]) derives Encoder.AsObject, Decoder
+/** 共有先を置き換える. notifyNew なら、新しく見えるようになった人に通知する. watch（省略時は true）なら、その人たちをウォッチャーにも登録する. */
+final case class TaskSharesReq(groupIds: List[UUID], userIds: List[UUID], notifyNew: Boolean, watch: Option[Boolean] = None)
+    derives Encoder.AsObject, Decoder
+
+/** 窓口: 問い合わせの共有先（グループ）. removable は自分が共有したもの（外せる）. */
+final case class HelpShareItemDto(groupId: UUID, name: String, removable: Boolean) derives Encoder.AsObject, Decoder
+/** 窓口: 共有先と、自分が共有できるグループ（自分のメールアドレスと同じドメインのもの. canShare は自分の問い合わせのときだけ）. */
+final case class HelpSharesDto(current: List[HelpShareItemDto], options: List[HelpShareItemDto], canShare: Boolean) derives Encoder.AsObject, Decoder
+final case class HelpSharesReq(groupIds: List[UUID]) derives Encoder.AsObject, Decoder
+
+/** 窓口（/help/KEY）の案内. ログインしていなくても、ゲスト登録を許可していれば名前と説明を返す. role はログインしていて参加済みなら入る. */
+final case class HelpPortalDto(projectId: UUID, key: String, name: String, description: String, guestSignup: Boolean, role: Option[String])
+    derives Encoder.AsObject, Decoder
+
+/** "ユーザ"に見せるタスク（担当者・ステータス・日付だけ. 作業時間・内部コメント・ラベルなどは出さない）. */
+final case class HelpTaskDto(id: UUID, key: String, projectId: UUID, title: String, statusName: String, statusCategory: String, statusColor: String,
+    reporter: Option[UserBrief], assignee: Option[UserBrief], createdAt: Timestamp, updatedAt: Timestamp, mine: Boolean) derives Encoder.AsObject, Decoder
+final case class HelpTaskDetailDto(task: HelpTaskDto, projectKey: String, projectName: String, description: Option[Json], descriptionHtml: String,
+    comments: List[CommentDto], attachments: List[AttachmentDto], sharedWith: List[String], watching: Boolean, agent: Boolean,
+    fields: List[HelpFieldValueDto]) derives Encoder.AsObject, Decoder
+/** 窓口の問い合わせの項目（フォームに出すカスタムフィールド）の値. */
+final case class HelpFieldValueDto(name: String, value: Json) derives Encoder.AsObject, Decoder
+/** 窓口の検索の結果. snippet は説明の一致した部分（キーワードを強調した HTML）, fuzzy はタイプミスを許した一致. */
+final case class HelpHitDto(task: HelpTaskDto, snippet: Option[String], fuzzy: Boolean) derives Encoder.AsObject, Decoder
+final case class HelpSearchResultDto(hits: List[HelpHitDto], total: Int, error: Option[String]) derives Encoder.AsObject, Decoder
+
+/** 窓口の検索で使える条件（画面の案内・入力の補助）. */
+object HelpSearch {
+  val keys: List[(String, String)] = List(
+    "status:進行中" -> "ステータスの名前",
+    "category:todo,in_progress,waiting,done" -> "ステータスの区分（作業前・進行中・待機中・完了）",
+    "is:open / is:done" -> "未完了・完了",
+    "is:mine / is:shared" -> "自分の問い合わせ・共有されたもの",
+    "is:watching" -> "通知を受け取っているもの",
+    "assignee:名前 / assignee:none" -> "担当者・未割り当て",
+    "reporter:名前" -> "問い合わせた人",
+    "created>-7d / updated<2026-12-01" -> "作成日・更新日・完了日（resolved）。today・-7d・-2w・-1m も使える",
+    "comment:語 / commented:me" -> "返信の本文・返信した人",
+    "has:attachment / has:comments" -> "添付・返信がある",
+    "key:HELP-12" -> "番号",
+    "-語 / -status:完了" -> "先頭の - で除外",
+    "order:-updated,created" -> "並び順（created・updated・resolved・key・title・status・assignee。- で降順）"
+  )
+}
+/** 問い合わせ. groupIds は作成と同時に共有するグループ（自分のメールアドレスと同じドメインのもの）. */
+final case class HelpRequestReq(title: String, description: Option[Json], groupIds: Option[List[UUID]] = None,
+    fields: Option[Map[String, Json]] = None) derives Encoder.AsObject, Decoder

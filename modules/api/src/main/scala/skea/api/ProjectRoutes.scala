@@ -53,6 +53,17 @@ final class ProjectRoutes(
       if s.zip(e).exists((a, b) => a.isAfter(b)) then Left(Fail.Invalid("開始日は終了日より前にしてください")) else Right((s, e))
     }
 
+  /** ヘルプデスクのプロジェクトでは、アクティブスプリントは自動で管理する（作成・開始・完了・削除・並べ替えはできない）。 */
+  private def sprintsManual(pid: UUID)(f: => IO[Response[IO]]): IO[Response[IO]] =
+    projects.helpdeskDoneDays(pid).flatMap {
+      case Some(_) => err(Status.BadRequest, "ヘルプデスクのプロジェクトでは、スプリントは自動で管理します（すべてのタスクが1つのアクティブスプリントに入ります）")
+      case None    => f
+    }
+
+  /** "ユーザ"（requester）の権限は、ヘルプデスクのプロジェクトでだけ付けられる。 */
+  private def requesterOk(pid: UUID, role: Role): IO[Boolean] =
+    if role.isAgent then IO.pure(true) else projects.dto(pid, role).map(_.exists(_.helpdesk))
+
   val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
     // ---------------------------------------------------------------- プロジェクト
     case req @ GET -> Root / "api" / "projects" =>
@@ -103,13 +114,16 @@ final class ProjectRoutes(
 
     case req @ PUT -> Root / "api" / "projects" / UuidVar(pid) / "members" =>
       withProject(req, pid, Role.Admin)((s, _) => body[SetMemberReq](req)(r => Role.parse(r.role) match
-        case None => err(Status.BadRequest, "権限は view / edit / admin です")
-        case Some(role) =>
+        case None => err(Status.BadRequest, "権限は requester / view / edit / admin です")
+        case Some(role) => requesterOk(pid, role).flatMap {
+          case false => err(Status.BadRequest, "\"ユーザ\"（requester）は、ヘルプデスクを有効にしたプロジェクトでだけ使えます")
+          case true =>
           users.find(r.userId).flatMap {
             case None => err(Status.NotFound, "ユーザーが見つかりません")
             case Some(_) => projects.setMember(pid, r.userId, role) *>
                 audit(s, "project.member.set", pid, Json.obj("userId" -> r.userId.asJson, "role" -> r.role.asJson)) *> NoContent()
-          }))
+          }
+        }))
 
     case req @ DELETE -> Root / "api" / "projects" / UuidVar(pid) / "members" / UuidVar(uid) =>
       withProject(req, pid, Role.Admin)((s, _) =>
@@ -120,11 +134,14 @@ final class ProjectRoutes(
 
     case req @ PUT -> Root / "api" / "projects" / UuidVar(pid) / "groups" =>
       withProject(req, pid, Role.Admin)((s, _) => body[SetGroupRoleReq](req)(r => (Role.parse(r.role), r.groupName.trim) match
-        case (None, _) => err(Status.BadRequest, "権限は view / edit / admin です")
+        case (None, _) => err(Status.BadRequest, "権限は requester / view / edit / admin です")
         case (_, "")   => err(Status.BadRequest, "グループ名を入力してください")
-        case (Some(role), g) =>
-          users.groupByName(g).flatMap(gid => projects.setGroupRole(pid, gid, role)) *>
-            audit(s, "project.group.set", pid, Json.obj("group" -> g.asJson, "role" -> r.role.asJson)) *> NoContent()))
+        case (Some(role), g) => requesterOk(pid, role).flatMap {
+          case false => err(Status.BadRequest, "\"ユーザ\"（requester）は、ヘルプデスクを有効にしたプロジェクトでだけ使えます")
+          case true =>
+            users.groupByName(g).flatMap(gid => projects.setGroupRole(pid, gid, role)) *>
+              audit(s, "project.group.set", pid, Json.obj("group" -> g.asJson, "role" -> r.role.asJson)) *> NoContent()
+        }))
 
     case req @ DELETE -> Root / "api" / "projects" / UuidVar(pid) / "groups" / UuidVar(gid) =>
       withProject(req, pid, Role.Admin)((s, _) => projects.removeGroupRole(pid, gid) *> audit(s, "project.group.remove", pid) *> NoContent())
@@ -202,15 +219,15 @@ final class ProjectRoutes(
       withProject(req, pid, Role.View)((_, _) => projects.sprints(pid, param(req, "closed").contains("true")).flatMap(Ok(_)))
 
     case req @ POST -> Root / "api" / "projects" / UuidVar(pid) / "sprints" =>
-      withProject(req, pid, Role.Edit)((s, _) => body[SprintReq](req)(r => sprintDates(r) match
+      withProject(req, pid, Role.Edit)((s, _) => sprintsManual(pid)(body[SprintReq](req)(r => sprintDates(r) match
         case Left(f) => fail(f)
         case Right(_) if r.name.trim.isEmpty => err(Status.BadRequest, "名前を入力してください")
         case Right((st, en)) =>
           projects.createSprint(pid, r, st, en).flatTap(sp =>
-            hub.emit(Op(s), pid, None, EventKind.SprintCreated, Json.obj("sprintId" -> sp.id.asJson, "name" -> sp.name.asJson))).flatMap(Created(_))))
+            hub.emit(Op(s), pid, None, EventKind.SprintCreated, Json.obj("sprintId" -> sp.id.asJson, "name" -> sp.name.asJson))).flatMap(Created(_)))))
 
     case req @ PUT -> Root / "api" / "projects" / UuidVar(pid) / "sprints" / "order" =>
-      withProject(req, pid, Role.Edit)((_, _) => body[ReorderReq](req)(r => projects.reorderSprints(pid, r.ids) *> NoContent()))
+      withProject(req, pid, Role.Edit)((_, _) => sprintsManual(pid)(body[ReorderReq](req)(r => projects.reorderSprints(pid, r.ids) *> NoContent())))
 
     case req @ PUT -> Root / "api" / "projects" / UuidVar(pid) / "sprints" / UuidVar(id) =>
       withProject(req, pid, Role.Edit)((s, _) => body[SprintReq](req)(r => sprintDates(r) match
@@ -224,30 +241,31 @@ final class ProjectRoutes(
           }))
 
     case req @ DELETE -> Root / "api" / "projects" / UuidVar(pid) / "sprints" / UuidVar(id) =>
-      withProject(req, pid, Role.Edit)((s, _) => projects.deleteSprint(pid, id).orFail.flatMap(_.fold(fail, _ =>
-        hub.emit(Op(s), pid, None, "sprint.deleted", Json.obj("sprintId" -> id.asJson)) *> NoContent())))
+      withProject(req, pid, Role.Edit)((s, _) => sprintsManual(pid)(projects.deleteSprint(pid, id).orFail.flatMap(_.fold(fail, _ =>
+        hub.emit(Op(s), pid, None, "sprint.deleted", Json.obj("sprintId" -> id.asJson)) *> NoContent()))))
 
     case req @ POST -> Root / "api" / "projects" / UuidVar(pid) / "sprints" / UuidVar(id) / "start" =>
-      withProject(req, pid, Role.Edit)((s, _) => projects.startSprint(pid, id, Op(s).today).orFail.flatMap {
+      withProject(req, pid, Role.Edit)((s, _) => sprintsManual(pid)(projects.startSprint(pid, id, Op(s).today).orFail.flatMap {
         case Left(f) => fail(f)
         case Right(sp) => hub.emit(Op(s), pid, None, EventKind.SprintStarted, Json.obj("sprintId" -> id.asJson, "name" -> sp.name.asJson)) *> Ok(sp)
-      })
+      }))
 
     case req @ POST -> Root / "api" / "projects" / UuidVar(pid) / "sprints" / UuidVar(id) / "complete" =>
-      withProject(req, pid, Role.Edit)((s, _) => body[CompleteSprintReq](req)(r =>
+      withProject(req, pid, Role.Edit)((s, _) => sprintsManual(pid)(body[CompleteSprintReq](req)(r =>
         projects.completeSprint(pid, id, r.moveTo).orFail.flatMap {
           case Left(f) => fail(f)
           case Right(n) =>
             hub.emit(Op(s), pid, None, EventKind.SprintCompleted, Json.obj("sprintId" -> id.asJson, "moved" -> n.asJson, "moveTo" -> r.moveTo.asJson)) *>
               Ok(Json.obj("moved" -> n.asJson))
-        }))
+        })))
 
     // ---------------------------------------------------------------- 表示用の一覧
     case req @ GET -> Root / "api" / "projects" / UuidVar(pid) / "board" =>
+      // ヘルプデスクでは、完了して設定の日数を過ぎたタスクを出さない
       withProject(req, pid, Role.View)((_, _) =>
-        projects.sprints(pid, includeClosed = false).flatMap { ss =>
+        (projects.sprints(pid, includeClosed = false), projects.helpdeskDoneDays(pid)).tupled.flatMap { (ss, hide) =>
           val active = param(req, "sprintId").flatMap(uuidOpt).flatMap(id => ss.find(_.id == id)).orElse(ss.find(_.state == "active"))
-          active.fold(IO.pure(List.empty[TaskDto]))(sp => tasks.board(pid, sp.id)).flatMap(ts => Ok(BoardDto(active, ts)))
+          active.fold(IO.pure(List.empty[TaskDto]))(sp => tasks.board(pid, sp.id, hide)).flatMap(ts => Ok(BoardDto(active, ts)))
         })
 
     case req @ GET -> Root / "api" / "projects" / UuidVar(pid) / "backlog" =>

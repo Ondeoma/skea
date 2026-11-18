@@ -65,7 +65,7 @@ def overdue(t: TaskDto): Boolean = Fmt.isOverdue(t.dueDate, t.resolvedAt.isDefin
         <div class="table-wrap">
           <table class="list">
             <tbody>
-              <tr v-for="n in s.mentions" :key="n.id" class="clickable" @click='Router.go(n.taskKey.fold("/notifications")(k => "/tasks/" + k + n.commentId.fold("")(c => "#comment-" + c)))'>
+              <tr v-for="n in s.mentions" :key="n.id" class="clickable" @click='Router.go(n.taskKey.fold("/notifications")(k => Store.taskLink(n.projectKey, k, n.commentId)))'>
                 <td><Avatar :user="n.actor" /></td>
                 <td>{{ n.title }}<div class="muted small">{{ n.body }}</div></td>
                 <td class="muted small nowrap">{{ Fmt.ago(n.at) }}</td>

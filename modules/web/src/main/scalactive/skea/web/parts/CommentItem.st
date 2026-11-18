@@ -52,7 +52,8 @@ def mine(props: Props): Boolean = props.c.author.exists(a => Store.myId.contains
 def reacted(r: ReactionDto): Boolean = r.users.exists(u => Store.myId.contains(u.id))
 def chipClass(r: ReactionDto): String = if (reacted(r)) "react on" else "react"
 def names(r: ReactionDto): String = r.users.map(_.name).mkString("、") + Reactions.customName(r.emoji).fold("")(n => s"（:$n:）")
-def cls(props: Props): String = if (props.highlight == s"comment-${props.c.id}") "comment hl" else "comment"
+def cls(props: Props): String =
+  (if (props.highlight == s"comment-${props.c.id}") "comment hl" else "comment") + (if (props.c.internal) " internal" else "")
 def edited(c: CommentDto): String = if (c.updatedAt.toEpochMilli - c.createdAt.toEpochMilli > 1000) "（編集済み）" else ""
 def viaLabel(c: CommentDto): String = c.via match {
   case "automation" => "🤖 自動化"
@@ -70,6 +71,7 @@ def viaLabel(c: CommentDto): String = c.via match {
         <b>{{ props.c.author.map(_.name).getOrElse("（削除されたユーザー）") }}</b>
         <a :href="link(props)" class="muted small" @click.prevent="copyLink(props)" title="リンクをコピー">{{ Fmt.dateTime(props.c.createdAt) }}</a>
         <span class="muted small">{{ edited(props.c) }} {{ viaLabel(props.c) }}</span>
+        <span v-if="props.c.internal" class="badge-internal" title="問い合わせした&quot;ユーザ&quot;には見えません">🔒 内部メモ</span>
         <span class="grow"></span>
         <button v-if="mine(props) && props.canEdit" class="ghost small" @click="props.onEdit(Some(props.c.id))">編集</button>
         <button v-if="(mine(props) || props.isAdmin) && props.canEdit" class="ghost small" @click="remove(props)">削除</button>
@@ -96,6 +98,8 @@ def viaLabel(c: CommentDto): String = c.via match {
 <style scoped>
 .comment { display: flex; gap: .7rem; padding: .6rem .5rem; border-radius: 8px; }
 .comment.hl { background: var(--accent-weak); }
+.comment.internal { background: var(--internal-bg); border-left: 3px solid #d97706; }
+.badge-internal { font-size: .72rem; padding: .05rem .45rem; border-radius: 999px; background: #d97706; color: #fff; }
 .body { flex: 1; min-width: 0; }
 .head { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin-bottom: .2rem; }
 .actions { margin-top: .4rem; }

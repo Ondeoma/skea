@@ -147,7 +147,8 @@ object Main extends IOApp.Simple:
         tokens   = new IntegrationTokenStore(xa)
         pushStore = new skea.push.PushStore(xa)
         push    <- Resource.eval(skea.push.PushService.create(pushStore, http, cfg.api.publicUrl, "skea"))
-        notifier = new NotifyService(activity, projects, users, sess, cfg.api, Some(new ChatNotifier(tokens, users, http, box, cfg.api)), Some(push))
+        help     = new HelpStore(xa)
+        notifier = new NotifyService(activity, projects, users, help, sess, cfg.api, Some(new ChatNotifier(tokens, users, http, box, cfg.api)), Some(push))
         svc      = new TaskService(tasks, projects, access, hub, notifier, cfg.api.adminGroups)
         hooks    = new WebhookService(integ, http, cfg.api)
         engine   = new AutomationEngine(integ, tasks, projects, users, activity, search, sess, access, svc, notifier, http, lock, cfg.api)
@@ -157,6 +158,7 @@ object Main extends IOApp.Simple:
         emojis   = new EmojiStore(xa)
         tplSvc   = new TemplateService(tplStore, projects, svc, sess, lock, cfg.api)
         imports  = new ImportService(projects, users, svc, cfg.api)
+        files    = new Attachments(tasks, users, hub, blobs)
         topic   <- Resource.eval(fs2.concurrent.Topic[IO, skea.api.FeedItem])
         feed     = new EventFeed(tasks, topic)
         cache   <- Resource.eval(LinkServiceRoutes.newCache)
@@ -171,7 +173,8 @@ object Main extends IOApp.Simple:
             new AuthRoutes(oidc, users, activity, sess, access, cfg.api).routes <+>
             new UserRoutes(users, projects, activity, blobs, emojis, sess, access).routes <+>
             new ProjectRoutes(projects, tasks, users, activity, svc, hub, sess, access, cfg.api).routes <+>
-            new TaskRoutes(tasks, users, activity, integ, svc, hub, engine, blobs, emojis, sess, access, cfg.api).routes <+>
+            new TaskRoutes(tasks, users, activity, integ, svc, hub, engine, blobs, files, emojis, sess, access, cfg.api).routes <+>
+            new HelpRoutes(help, projects, tasks, activity, svc, hub, notifier, files, sess, access, cfg.api).routes <+>
             new SearchRoutes(search, projects, activity, sess, access).routes <+>
             new IntegrationRoutes(integ, projects, users, activity, hooks, engine, scm, box, sess, access, cfg.api).routes <+>
             new TemplateRoutes(tplStore, tplSvc, imports, sess, access).routes <+>

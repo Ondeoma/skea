@@ -8,6 +8,7 @@ def base: String = Store.meta.v.map(m => s"/p/${m.project.key}/settings").getOrE
 val routes: PathPatternRoutes = List(
   ("general", _ => General()),
   ("members", _ => Members()),
+  ("helpdesk", _ => Helpdesk()),
   ("statuses", _ => Statuses()),
   ("labels", _ => Labels()),
   ("fields", _ => Fields()),
@@ -28,6 +29,7 @@ def mounted(): Unit = pageTitle("設定")
       <nav class="side-nav">
         <RouterLink :to='base + "/general"'>一般</RouterLink>
         <RouterLink :to='base + "/members"'>メンバーと権限</RouterLink>
+        <RouterLink :to='base + "/helpdesk"'>ヘルプデスク</RouterLink>
         <RouterLink :to='base + "/statuses"'>ステータス</RouterLink>
         <RouterLink :to='base + "/labels"'>ラベル</RouterLink>
         <RouterLink :to='base + "/fields"'>カスタムフィールド</RouterLink>

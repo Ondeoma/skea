@@ -34,8 +34,8 @@ final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, activity: Act
   private def stateCookie(v: String, maxAge: Long): ResponseCookie =
     ResponseCookie(StateCookie, v, maxAge = Some(maxAge), path = Some("/auth"), httpOnly = true, secure = cfg.cookieSecure, sameSite = Some(SameSite.Lax))
 
-  private def loggedIn(u: User, via: String): IO[ResponseCookie] =
-    sessions.issue(u).flatTap(_ => activity.audit(Some(u.id), via, "auth.login", None, Json.obj()) *> skea.observe.Metrics.count("skea.logins", "via" -> via))
+  private def loggedIn(u: User, via: String, idToken: Option[String] = None): IO[ResponseCookie] =
+    sessions.issue(u, idToken).flatTap(_ => activity.audit(Some(u.id), via, "auth.login", None, Json.obj()) *> skea.observe.Metrics.count("skea.logins", "via" -> via))
 
   val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
     case req @ GET -> Root / "auth" / "login" =>
@@ -65,7 +65,7 @@ final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, activity: Act
                   for
                     u <- users.upsert(id.sub, id.name, id.email, id.picture)
                     r <- if u.disabled then err(Status.Forbidden, "このユーザーは無効にされています")
-                         else users.syncGroups(u.id, id.groups) *> loggedIn(u, "web").flatMap(c =>
+                         else users.syncGroups(u.id, id.groups) *> loggedIn(u, "web", id.idToken).flatMap(c =>
                            redirect(back, Some(c)).map(_.addCookie(stateCookie("", 0))))
                   yield r
               }
@@ -73,8 +73,13 @@ final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, activity: Act
         case (None, _, _) => err(Status.ServiceUnavailable, "OIDC が設定されていません")
         case _            => err(Status.BadRequest, "code と state が必要です")
 
+    // ログアウト: セッションを消し、IdP にもログアウトを頼む（IdP のログインが残っていると、すぐにログインし直してしまうため）
     case req @ POST -> Root / "auth" / "logout" =>
-      sessions.revoke(req).flatMap(c => Ok(Json.obj("redirect" -> "/".asJson)).map(_.addCookie(c)))
+      sessions.revoke(req).flatMap { (idToken, c) =>
+        oidc.flatTraverse(_.logoutUri(idToken, s"${cfg.publicUrl.stripSuffix("/")}/")).flatMap { idp =>
+          Ok(Json.obj("redirect" -> idp.fold("/")(_.renderString).asJson)).map(_.addCookie(c))
+        }
+      }
 
     // 開発用: 名前だけでログインする（DEV_LOGIN=true のときだけ）
     case req @ POST -> Root / "auth" / "dev-login" if cfg.devLogin && oidc.isEmpty =>

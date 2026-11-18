@@ -49,8 +49,15 @@ final class ProjectStore(xa: Transactor[IO]) extends TxStore(xa):
 
   def role(projectId: UUID, s: AuthSession): IO[Option[Role]] = tx(roleC(projectId, s))
 
-  /** 見えるプロジェクトの ID と権限。 */
-  def visibleC(s: AuthSession): ConnectionIO[Map[UUID, Role]] =
+  /** 見えるプロジェクトの ID と権限（エージェントとして。ヘルプデスクの"ユーザ"として参加しているものは含めない）。 */
+  def visibleC(s: AuthSession): ConnectionIO[Map[UUID, Role]] = membershipsC(s).map(_.filter(_._2.isAgent))
+
+  def visible(s: AuthSession): IO[Map[UUID, Role]] = tx(visibleC(s))
+
+  /** 参加しているプロジェクトの ID と権限（ヘルプデスクの"ユーザ"を含む）。 */
+  def memberships(s: AuthSession): IO[Map[UUID, Role]] = tx(membershipsC(s))
+
+  def membershipsC(s: AuthSession): ConnectionIO[Map[UUID, Role]] =
     val gids = s.groups.map(_.id).toArray
     val q =
       if s.isAdmin then sql"select id, 'admin' from project"
@@ -58,20 +65,18 @@ final class ProjectStore(xa: Transactor[IO]) extends TxStore(xa):
         sql"""select project_id, role from project_member where user_id = ${s.user.id}
               union all select project_id, role from project_group_member where group_id = any($gids)"""
     q.query[(UUID, String)].to[List].map { rows =>
-      rows.groupMapReduce(_._1)(r => Role.parse(r._2).getOrElse(Role.View))((a, b) => if a >= b then a else b)
+      rows.groupMapReduce(_._1)(r => Role.parse(r._2).getOrElse(Role.Requester))((a, b) => if a >= b then a else b)
         .filter((id, _) => s.allowsProject(id))
         .map((id, r) => id -> Access.limit(s, r))
     }
 
-  def visible(s: AuthSession): IO[Map[UUID, Role]] = tx(visibleC(s))
-
   // ---------------------------------------------------------------- プロジェクト
 
   private val projCols =
-    fr"""p.id, p.key, p.name, p.description, l.id, l.name, l.avatar_url, p.archived, p.created_at
+    fr"""p.id, p.key, p.name, p.description, l.id, l.name, l.avatar_url, p.archived, p.created_at, p.helpdesk
          from project p left join app_user l on l.id = p.lead_id"""
 
-  private type ProjRow = (UUID, String, String, String, Option[UserBrief], Boolean, Instant)
+  private type ProjRow = (UUID, String, String, String, Option[UserBrief], Boolean, Instant, Boolean)
 
   def list(s: AuthSession, includeArchived: Boolean): IO[List[ProjectDto]] = tx {
     for
@@ -79,7 +84,7 @@ final class ProjectStore(xa: Transactor[IO]) extends TxStore(xa):
       rows <- (fr"select" ++ projCols ++ fr"where p.id = any(${roles.keys.toArray})" ++
                 (if includeArchived then Fragment.empty else fr"and not p.archived") ++ fr"""order by p.position collate "C", p.name""")
                 .query[ProjRow].to[List]
-    yield rows.map(r => ProjectDto(r._1, r._2, r._3, r._4, r._5, r._6, roles(r._1).asString, r._7))
+    yield rows.map(r => ProjectDto(r._1, r._2, r._3, r._4, r._5, r._6, roles(r._1).asString, r._7, r._8))
   }
 
   def find(id: UUID): IO[Option[Project]] = tx(findC(id))
@@ -95,7 +100,7 @@ final class ProjectStore(xa: Transactor[IO]) extends TxStore(xa):
 
   def dtoC(id: UUID, role: Role): ConnectionIO[Option[ProjectDto]] =
     (fr"select" ++ projCols ++ fr"where p.id = $id").query[ProjRow].option
-      .map(_.map(r => ProjectDto(r._1, r._2, r._3, r._4, r._5, r._6, role.asString, r._7)))
+      .map(_.map(r => ProjectDto(r._1, r._2, r._3, r._4, r._5, r._6, role.asString, r._7, r._8)))
 
   /** 作成者を管理者のメンバーにし、既定のステータス（作業前・進行中・待機中・完了）を作る。 */
   def create(key: String, name: String, description: String, creator: UUID): IO[Either[StoreError, UUID]] = tx {
@@ -129,6 +134,11 @@ final class ProjectStore(xa: Transactor[IO]) extends TxStore(xa):
     ).flatten
     if sets.isEmpty then ().pure[ConnectionIO] else (fr"update project" ++ Sql.set(sets) ++ fr"where id = $id").update.run.void
   }
+
+  /** ヘルプデスクなら、ボードで完了したタスクを出す日数。ヘルプデスクでなければ None。 */
+  def helpdeskDoneDays(id: UUID): IO[Option[Int]] = tx(
+    sql"select done_hide_days from project where id = $id and helpdesk".query[Int].option
+  )
 
   def delete(id: UUID): IO[Unit] = tx(sql"delete from project where id = $id".update.run.void)
 
@@ -199,14 +209,14 @@ final class ProjectStore(xa: Transactor[IO]) extends TxStore(xa):
       roles ++ gs.groupBy(g => (g._1, g._2)).toList.map((k, ms) => MentionGroupDto(s"g:${k._1}", k._2, ms.count(m => aud(m._3))))
         .filter(_.count > 0).sortBy(_.name)
 
-  /** プロジェクトを閲覧できる有効なユーザー（メンションの候補・通知の宛先の確認）。 */
+  /** プロジェクトを閲覧できる有効なユーザー（メンションの候補・通知の宛先の確認）。ヘルプデスクの"ユーザ"は含めない。 */
   def audience(projectId: UUID, adminGroups: Set[String]): IO[List[UserBrief]] = tx(
     sql"""select distinct u.id, u.name, u.avatar_url from app_user u
           where not u.disabled and (
             u.is_admin
-            or exists(select 1 from project_member m where m.project_id = $projectId and m.user_id = u.id)
+            or exists(select 1 from project_member m where m.project_id = $projectId and m.user_id = u.id and m.role <> 'requester')
             or exists(select 1 from project_group_member pg join group_member gm on gm.group_id = pg.group_id
-                      where pg.project_id = $projectId and gm.user_id = u.id)
+                      where pg.project_id = $projectId and gm.user_id = u.id and pg.role <> 'requester')
             or exists(select 1 from group_member gm join user_group g on g.id = gm.group_id
                       where gm.user_id = u.id and g.name = any(${adminGroups.toArray})))
           order by u.name""".query[UserBrief].to[List]
@@ -289,13 +299,15 @@ final class ProjectStore(xa: Transactor[IO]) extends TxStore(xa):
   def fields(projectId: UUID): IO[List[CustomFieldDto]] = tx(fieldsC(projectId))
 
   def fieldsC(projectId: UUID): ConnectionIO[List[CustomFieldDto]] =
-    sql"select id, name, kind, options, required, position from custom_field where project_id = $projectId order by position, name"
-      .query[(UUID, String, String, Json, Boolean, Int)]
-      .map((id, n, k, o, r, p) => CustomFieldDto(id, n, k, o.as[List[String]].getOrElse(Nil), r, p)).to[List]
+    sql"""select id, name, kind, options, required, position, help_form, help_hint from custom_field
+          where project_id = $projectId order by position, name"""
+      .query[(UUID, String, String, Json, Boolean, Int, Boolean, String)]
+      .map((id, n, k, o, r, p, hf, hh) => CustomFieldDto(id, n, k, o.as[List[String]].getOrElse(Nil), r, p, hf, hh)).to[List]
 
   def addField(projectId: UUID, r: CustomFieldReq): IO[Either[StoreError, CustomFieldDto]] = tx(
-    sql"""insert into custom_field (id, project_id, name, kind, options, required, position)
+    sql"""insert into custom_field (id, project_id, name, kind, options, required, help_form, help_hint, position)
           values (${UUID.randomUUID()}, $projectId, ${r.name.trim}, ${r.kind}, ${r.options.asJson}, ${r.required},
+                  ${r.helpForm.getOrElse(false)}, ${r.helpHint.getOrElse("").trim},
                   coalesce((select max(position) + 1 from custom_field where project_id = $projectId), 0))
           returning id""".query[UUID].unique.attemptSql.flatMap {
       case Left(_)   => fail(StoreError.Conflict(s"フィールド「${r.name}」はすでにあります"))
@@ -304,7 +316,8 @@ final class ProjectStore(xa: Transactor[IO]) extends TxStore(xa):
   )
 
   def updateField(projectId: UUID, id: UUID, r: CustomFieldReq): IO[Either[StoreError, Unit]] = tx(updateUniqueC(
-    sql"""update custom_field set name = ${r.name.trim}, kind = ${r.kind}, options = ${r.options.asJson}, required = ${r.required}
+    sql"""update custom_field set name = ${r.name.trim}, kind = ${r.kind}, options = ${r.options.asJson}, required = ${r.required},
+          help_form = coalesce(${r.helpForm}, help_form), help_hint = coalesce(${r.helpHint.map(_.trim)}, help_hint)
           where id = $id and project_id = $projectId""",
     "フィールド", r.name))
 
@@ -383,7 +396,7 @@ final class ProjectStore(xa: Transactor[IO]) extends TxStore(xa):
         lb <- labelsC(projectId)
         sp <- sprintsC(projectId, includeClosed = false)
         fs <- fieldsC(projectId)
-        ms <- membersC(projectId)
+        ms <- membersC(projectId).map(_.filterNot(_.role == Roles.Requester))  // 担当者などの候補は、エージェントだけ
         ev <- sql"select coalesce(max(id), 0) from task_event where project_id = $projectId".query[Long].unique
       yield ProjectMetaDto(p, st, lb, sp, fs, ms, ev)
     })

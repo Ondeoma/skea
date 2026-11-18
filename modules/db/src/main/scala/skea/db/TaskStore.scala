@@ -125,9 +125,12 @@ final class TaskStore(xa: Transactor[IO]) extends TxStore(xa):
 
   private val byRank = fr"""order by t.rank collate "C", t.number"""
 
-  /** アクティブなスプリントのタスク（カンバン）。 */
-  def board(projectId: UUID, sprintId: UUID): IO[List[TaskDto]] = tx(
-    (dtoSelect ++ fr"where t.project_id = $projectId and t.sprint_id = $sprintId and t.deleted_at is null" ++ byRank).query[TaskDto].to[List]
+  /** アクティブなスプリントのタスク（カンバン）。hideDoneAfterDays があれば、完了してその日数を過ぎたタスクを出さない（ヘルプデスク）。 */
+  def board(projectId: UUID, sprintId: UUID, hideDoneAfterDays: Option[Int] = None): IO[List[TaskDto]] = tx(
+    (dtoSelect ++ fr"where t.project_id = $projectId and t.sprint_id = $sprintId and t.deleted_at is null" ++
+      hideDoneAfterDays.fold(Fragment.empty)(d =>
+        fr"""and not (exists(select 1 from status s where s.id = t.status_id and s.category = 'done')
+                      and coalesce(t.resolved_at, t.updated_at) < now() - make_interval(days => $d))""") ++ byRank).query[TaskDto].to[List]
   )
 
   /** バックログ: 完了していないスプリントのタスクと、スプリントのない未完了のタスク。 */
@@ -498,10 +501,10 @@ final class TaskStore(xa: Transactor[IO]) extends TxStore(xa):
   // ---------------------------------------------------------------- コメント
 
   private val commentSelect =
-    fr"""select c.id, c.task_id, u.id, u.name, u.avatar_url, c.body, c.via, c.created_at, c.updated_at
+    fr"""select c.id, c.task_id, u.id, u.name, u.avatar_url, c.body, c.via, c.created_at, c.updated_at, c.internal
          from comment c left join app_user u on u.id = c.author_id"""
 
-  private type CommentRow = (UUID, UUID, Option[UserBrief], Json, String, Instant, Instant)
+  private type CommentRow = (UUID, UUID, Option[UserBrief], Json, String, Instant, Instant, Boolean)
 
   /** コメントごとのリアクション（絵文字の並びは最初に付けられた順）。 */
   private def reactionsC(ids: List[UUID]): ConnectionIO[Map[UUID, List[ReactionDto]]] =
@@ -514,19 +517,22 @@ final class TaskStore(xa: Transactor[IO]) extends TxStore(xa):
 
   private def commentDtos(rows: List[CommentRow]): ConnectionIO[List[CommentDto]] =
     reactionsC(rows.map(_._1)).map(rs => rows.map(r =>
-      CommentDto(r._1, r._2, r._3, r._4, RichText.toHtml(r._4), r._5, r._6, r._7, rs.getOrElse(r._1, Nil))))
+      CommentDto(r._1, r._2, r._3, r._4, RichText.toHtml(r._4), r._5, r._6, r._7, rs.getOrElse(r._1, Nil), r._8)))
 
-  def comments(taskId: UUID): IO[List[CommentDto]] = tx(
-    (commentSelect ++ fr"where c.task_id = $taskId and c.deleted_at is null order by c.created_at").query[CommentRow].to[List].flatMap(commentDtos)
+  /** タスクのコメント。withInternal が false なら内部コメント（エージェントだけに見えるもの）を除く（ヘルプデスクの"ユーザ"）。 */
+  def comments(taskId: UUID, withInternal: Boolean = true): IO[List[CommentDto]] = tx(
+    (commentSelect ++ fr"where c.task_id = $taskId and c.deleted_at is null" ++ (if withInternal then Fragment.empty else fr"and not c.internal") ++
+      fr"order by c.created_at").query[CommentRow].to[List].flatMap(commentDtos)
   )
 
   def comment(id: UUID): IO[Option[CommentDto]] = tx(
     (commentSelect ++ fr"where c.id = $id and c.deleted_at is null").query[CommentRow].to[List].flatMap(commentDtos).map(_.headOption)
   )
 
-  def addComment(taskId: UUID, author: Option[UUID], body: Json, text: String, via: String): IO[CommentDto] = tx {
+  def addComment(taskId: UUID, author: Option[UUID], body: Json, text: String, via: String, internal: Boolean = false): IO[CommentDto] = tx {
     val id = UUID.randomUUID()
-    sql"insert into comment (id, task_id, author_id, body, body_text, via) values ($id, $taskId, $author, $body, $text, $via)".update.run *>
+    sql"""insert into comment (id, task_id, author_id, body, body_text, via, internal)
+          values ($id, $taskId, $author, $body, $text, $via, $internal)""".update.run *>
       sql"update task set updated_at = now() where id = $taskId".update.run *>
       (commentSelect ++ fr"where c.id = $id").query[CommentRow].to[List].flatMap(commentDtos).map(_.head)
   }

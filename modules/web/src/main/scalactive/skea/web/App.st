@@ -24,24 +24,44 @@ val routes: PathPatternRoutes = List(
   ("/notifications", _ => NotificationView()),
   ("/settings", _ => MySettingsView()),
   ("/admin", _ => AdminView()),
+  ("/help", _ => HelpHome()),
+  ("/help/t/:key", r => HelpTask(taskKey = r.pathname.groups("key"))),
+  ("/help/:key", r => HelpPortal(key = r.pathname.groups("key"))),
 )
+
+/** 窓口の案内（/help/KEY）はログインしていなくても見られる. */
+def isPortal(path: String): Boolean = path.matches("^/help/[^/]+/?$") && !path.startsWith("/help/t/")
+
+/** ログインしている人の情報を読み、プロジェクトと窓口を読む. 問い合わせする"ユーザ"だけの人は窓口の画面にする. */
+def start(s: State, me: MeDto): Unit = {
+  Store.me := Some(me)
+  Observe.setUser(me.id.toString)
+  Store.loadAll().onComplete { r =>
+    val path = dom.window.location.pathname
+    if (r.toOption.contains(true)) {
+      if (path == "/") Router.go("/help")
+      else if (path.startsWith("/tasks/")) Router.go("/help/t/" + path.stripPrefix("/tasks/") + dom.window.location.hash)
+    }
+    s.ready := true
+  }
+  Store.poll()
+  Store.connect()
+}
 
 def mounted(s: State): Unit = {
   Fallback.install(routes)
   Api.clientConfig().foreach { c =>
     Store.config := Some(c)
-    // skiwi・skawau と連携していれば、そのリンクに名前を出す
-    if (c.linkServices.nonEmpty) LinkTitles.load()
+    // skiwi・skawau と連携していれば、そのリンクに名前を出す（ログインせずに見られる窓口の案内では読まない）
+    if (c.linkServices.nonEmpty && !isPortal(dom.window.location.pathname)) LinkTitles.load()
   }
-  if (dom.window.location.pathname.startsWith("/login")) s.ready := true
-  else Store.report(Api.me()) { me =>
-    Store.me := Some(me)
-    Observe.setUser(me.id.toString)
-    Store.loadProjects()
-    Store.poll()
-    Store.connect()
-    s.ready := true
+  val path = dom.window.location.pathname
+  if (path.startsWith("/login")) s.ready := true
+  else if (isPortal(path)) Api.meOpt().foreach {
+    case Some(me) => start(s, me)
+    case None     => s.ready := true
   }
+  else Store.report(Api.me())(me => start(s, me))
 }
 
 def search(s: State): Unit = {
@@ -49,7 +69,7 @@ def search(s: State): Unit = {
   Router.go("/search?q=" + Api.enc(q))
 }
 
-def logout(): Unit = Api.logout().foreach(_ => dom.window.location.href = "/")
+def logout(): Unit = Api.logout().onComplete(r => dom.window.location.href = r.getOrElse("/"))
 
 /** 表示中のプロジェクトのキー. */
 def currentKey(href: String): String = {
@@ -63,20 +83,24 @@ def meBrief = Store.me.mapC(_.map(m => UserBrief(m.id, m.name, m.avatarUrl)))
 def unreadLabel = Store.unread.mapC(u => if (u.unread > 99) "99+" else u.unread.toString)
 def hasUnread = Store.unread.mapC(_.unread > 0)
 def loggedIn = Store.me.mapC(_.isDefined)
+/** エージェントとしての画面（プロジェクトの切り替え・検索）を出すか. */
+def agentUi = computed { Store.me.v.isDefined && !Store.helpOnly.v }
+def hasPortals = Store.helpProjects.mapC(_.nonEmpty)
 </script>
 
 <template>
   <header class="top">
-    <RouterLink to="/" class="logo"><span class="brand"><img src="/logo.svg" alt="" width="28" height="28">skea</span></RouterLink>
-    <div v-if="loggedIn" class="psel">
+    <RouterLink v-if="Store.helpOnly.mapC(!_)" to="/" class="logo"><span class="brand"><img src="/logo.svg" alt="" width="28" height="28">skea</span></RouterLink>
+    <RouterLink v-if="Store.helpOnly" to="/help" class="logo"><span class="brand"><img src="/logo.svg" alt="" width="28" height="28">skea</span></RouterLink>
+    <div v-if="agentUi" class="psel">
       <Combo :live="Some(Store.projects.mapC(_.map(p => Opt(p.key, p.key + &quot; &quot; + p.name))))" :shows="Some(Router.href.mapC(currentKey))"
         placeholder="プロジェクト…" :small="true" :onChange='k => Router.go("/p/" + k + "/board")' />
     </div>
     <div class="spacer"></div>
-    <form v-if="loggedIn" class="search hide-sp" @submit.prevent="search(s)">
+    <form v-if="agentUi" class="search hide-sp" @submit.prevent="search(s)">
       <input type="search" v-model="s.q" placeholder="タスクを検索（例: ログイン assignee:me）">
     </form>
-    <RouterLink v-if="loggedIn" to="/search" class="only-sp"><span class="icon">🔍</span></RouterLink>
+    <RouterLink v-if="agentUi" to="/search" class="only-sp"><span class="icon">🔍</span></RouterLink>
     <!-- RouterLink の a には scoped の CSS が届かないので、中の span に当てる -->
     <RouterLink v-if="loggedIn" to="/notifications">
       <span class="icon bell" title="通知">🔔<span v-if="hasUnread" class="dot">{{ unreadLabel }}</span></span>
@@ -85,7 +109,8 @@ def loggedIn = Store.me.mapC(_.isDefined)
       <button class="ghost me-btn" @click="s.menu := !s.menu.v"><Avatar :user="meBrief.v" :size="24" /><span class="hide-sp">{{ userName }}</span> ▾</button>
       <div v-if="s.menu" class="menu-bg" @click="s.menu := false"></div>
       <div v-if="s.menu" class="menu" @click="s.menu := false">
-        <RouterLink to="/worklogs">作業時間の一覧</RouterLink>
+        <RouterLink v-if="hasPortals" to="/help">問い合わせ窓口</RouterLink>
+        <RouterLink v-if="agentUi" to="/worklogs">作業時間の一覧</RouterLink>
         <RouterLink to="/notifications">通知</RouterLink>
         <RouterLink to="/settings">個人設定・APIキー</RouterLink>
         <RouterLink v-if="Store.isAdmin" to="/admin">管理</RouterLink>

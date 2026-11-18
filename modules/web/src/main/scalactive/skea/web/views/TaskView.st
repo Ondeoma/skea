@@ -322,6 +322,11 @@ def nameOf(id: UUID): String = Fmt.statusName(Store.meta.v, id)
       </div>
 
       <aside class="side">
+        <!-- ヘルプデスク: 問い合わせする"ユーザ"への共有（詳細を読み直しても作り直さない） -->
+        <template v-for="i in s.ident.mapC(_.toList)">
+          <SharePanel v-if="Store.helpdesk" :taskId="i.id" :projectId="i.projectId" :canEdit="i.canEdit" :onChanged="_ => load(s, props)" />
+          <p v-if="Store.helpdesk" class="small"><RouterLink :to='"/help/t/" + i.key'>窓口での見え方を確認 →</RouterLink></p>
+        </template>
         <template v-for="d in s.detail.mapC(_.toList)">
           <div class="field"><span>ステータス</span>
             <Combo :options="Opt.statuses(statuses.v)" :value="d.task.statusId.toString" :disabled="!canEdit(s).v"
@@ -343,7 +348,7 @@ def nameOf(id: UUID): String = Fmt.statusName(Store.meta.v, id)
             <Combo :options="Opt.users(s.audience.v)" :value='d.task.reporter.map(_.id.toString).getOrElse("")' clearLabel="なし"
               :disabled="!canEdit(s).v" :onChange='v => patch(s, props, "reporterId" -> opt(v))' />
           </div>
-          <div class="field"><span>スプリント</span>
+          <div v-if="Store.helpdesk.mapC(!_)" class="field"><span>スプリント</span>
             <Combo :options="sprintOpts.v" :value='d.task.sprintId.map(_.toString).getOrElse("")' clearLabel="バックログ"
               :disabled="!canEdit(s).v" :onChange='v => patch(s, props, "sprintId" -> opt(v))' />
           </div>

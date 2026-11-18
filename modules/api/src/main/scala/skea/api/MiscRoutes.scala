@@ -72,7 +72,8 @@ final class SearchRoutes(search: SearchStore, projects: ProjectStore, activity: 
       authed(req) { s =>
         val kinds = param(req, "kinds").toList.flatMap(_.split(',').toList.map(_.trim)).filter(NotificationKind.all.contains)
         val before = param(req, "before").flatMap(b => scala.util.Try(Instant.parse(b)).toOption)
-        projects.visible(s).flatMap(vis =>
+        // ヘルプデスクの"ユーザ"として参加しているプロジェクトの通知も出す
+        projects.memberships(s).flatMap(vis =>
           activity.list(s.user.id, kinds, param(req, "unread").contains("true"), vis.keys.toList, before, intParam(req, "limit", 50, 200)).flatMap(Ok(_)))
       }
 

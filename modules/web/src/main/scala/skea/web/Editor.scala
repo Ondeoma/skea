@@ -271,10 +271,10 @@ object Editor {
 
   /**
    * エディタを作る. projectId を渡すと @メンションの候補をそのプロジェクトのメンバーから出す.
-   * taskId を渡すと画像・ファイルの貼り付けでタスクに添付する.
+   * 画像・ファイルの貼り付け・ドロップは uploadUrl に送る（省略時は taskId のタスクの添付. ヘルプデスクの窓口では窓口の API の URL を渡す）.
    */
   def create(el: dom.Element, content: Option[Json], placeholder: String, projectId: Option[UUID], taskId: Option[UUID],
-             onSubmit: () => Unit, autofocus: Boolean = false, onChange: Json => Unit = _ => ()): EditorHandle = {
+             onSubmit: () => Unit, autofocus: Boolean = false, onChange: Json => Unit = _ => (), uploadUrl: Option[String] = None): EditorHandle = {
     el.classList.add("sk-editor")
     def div(cls: String) = dom.document.createElement("div").asInstanceOf[dom.HTMLElement].tap(_.className = cls)
     val toolbar = div("sk-toolbar")
@@ -302,15 +302,16 @@ object Editor {
           .take(12).map(_.asInstanceOf[js.Object]).toJSArray
       }.toJSPromise
     }
-    val upload: js.Any = taskId match {
+    val uploadTo = uploadUrl.orElse(taskId.map(tid => s"/api/tasks/$tid/attachments"))
+    val upload: js.Any = uploadTo match {
       case None => null
-      case Some(tid) =>
+      case Some(url) =>
         val f: js.Function1[dom.File, js.Promise[js.Object]] = (file: dom.File) =>
-          Api.upload(tid, file).map(a => js.Dynamic.literal(url = a.url, name = a.fileName, image = a.contentType.startsWith("image/")).asInstanceOf[js.Object]).toJSPromise
+          Api.sendFile[AttachmentDto](url, file).map(a => js.Dynamic.literal(url = a.url, name = a.fileName, image = a.contentType.startsWith("image/")).asInstanceOf[js.Object]).toJSPromise
         f
     }
     var handle: TiptapHandle = null
-    val slash = slashItems(taskId.isDefined, pickFile)
+    val slash = slashItems(uploadTo.isDefined, pickFile)
     val slashFn: js.Function1[String, js.Array[js.Object]] = (query: String) => {
       val q = query.toLowerCase
       slash.filter(i => q.isEmpty || i.label.toLowerCase.contains(q) || i.keys.contains(q)).take(12).map { i =>
@@ -342,7 +343,7 @@ object Editor {
       h.uploadFiles((0 until fs.length).map(fs(_)).toJSArray, null); fileInput.value = ""
     })
     toolbar.appendChild(fileInput)
-    val buttons = (tools ++ Option.when(taskId.isDefined)(Some(Tool("""<span class="ico ico-image"></span>""", "画像・ファイルを添付", _ => pickFile())))).flatMap {
+    val buttons = (tools ++ Option.when(uploadTo.isDefined)(Some(Tool("""<span class="ico ico-image"></span>""", "画像・ファイルを添付", _ => pickFile())))).flatMap {
       case None    => toolbar.appendChild(span("sk-sep")); None
       case Some(t) => Some(button(t.label, t.title)(() => t.run(h)).tap(toolbar.appendChild) -> t)
     }

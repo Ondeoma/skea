@@ -18,6 +18,15 @@ object Store {
   val me: RV[Option[MeDto]] = RV(None)
   val config: RV[Option[ClientConfigDto]] = RV(None)
   val projects: RV[List[ProjectDto]] = RV(Nil)
+
+  /** ヘルプデスクの窓口（"ユーザ"かエージェントとして参加しているもの）. */
+  val helpProjects: RV[List[HelpPortalDto]] = RV(Nil)
+
+  /** 問い合わせする"ユーザ"としてだけ参加している（簡素な画面にする）. */
+  val helpOnly: RV[Boolean] = RV(false)
+
+  /** 窓口の画面の表示を取り直すきっかけ（自分への通知が届いたとき）. */
+  val helpTick: RV[Int] = RV(0)
   val unread: RV[UnreadDto] = RV(UnreadDto(0, 0))
   val toasts: RV[List[Toast]] = RV(Nil)
 
@@ -43,6 +52,9 @@ object Store {
   /** 表示中のプロジェクトを編集できるか・管理できるか. */
   def canEdit = meta.mapC(_.exists(m => Roles.rank(m.project.role) >= 2))
   def isProjectAdmin = meta.mapC(_.exists(_.project.role == Roles.Admin))
+
+  /** 表示中のプロジェクトがヘルプデスクか（スプリントは自動で管理し、バックログを持たない）. */
+  def helpdesk = meta.mapC(_.exists(_.project.helpdesk))
 
   /** システム管理者か. */
   def isAdmin = me.mapC(_.exists(_.isAdmin))
@@ -72,6 +84,20 @@ object Store {
   // ---------------------------------------------------------------- 読み込み
 
   def loadProjects(): Future[List[ProjectDto]] = Api.projects().map { ps => projects := ps; ps }
+
+  /** プロジェクトと窓口を読み、"ユーザ"としてだけ参加しているかを決める. */
+  def loadAll(): Future[Boolean] =
+    loadProjects().zip(Api.helpProjects().recover(_ => Nil)).map { (ps, hs) =>
+      helpProjects := hs
+      helpOnly := ps.isEmpty && hs.nonEmpty && !me.v.exists(_.isAdmin)
+      helpOnly.v
+    }
+
+  /** 通知などからタスクを開くときの画面（エージェントならタスクの画面、"ユーザ"なら窓口の画面）. */
+  def taskLink(projectKey: Option[String], key: String, commentId: Option[UUID] = None): String = {
+    val agent = projectKey.forall(pk => projects.v.exists(_.key == pk))
+    (if (agent) s"/tasks/$key" else s"/help/t/$key") + commentId.fold("")(c => s"#comment-$c")
+  }
 
   /** プロジェクトを表示する（設定を読み、変更の監視を始める）. */
   def openProject(key: String): Future[ProjectMetaDto] =
@@ -136,7 +162,7 @@ object Store {
         }
       }
     }
-    Api.unread().foreach(u => if (u != unread.v) unread := u)
+    Api.unread().foreach(u => if (u != unread.v) { unread := u; helpTick := helpTick.v + 1 })
   }
 
   /** 自分の操作の直後（他の画面の表示も取り直す）. */

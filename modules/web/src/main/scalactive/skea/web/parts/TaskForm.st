@@ -165,7 +165,7 @@ def fields(s: State) = s.meta.mapC(_.map(_.fields).getOrElse(Nil))
       <div class="field"><span>優先度</span><Combo :bind="Some(s.priority)" :options="Opt.priorities" /></div>
       <div class="field"><span>ステータス</span><Combo :bind="Some(s.statusId)" :live="Some(statusOpts(s))" /></div>
       <div class="field"><span>担当者</span><Combo :bind="Some(s.assignee)" :live="Some(s.audience.mapC(Opt.users))" clearLabel="未割り当て" /></div>
-      <div class="field"><span>スプリント</span><Combo :bind="Some(s.sprint)" :live="Some(sprintOpts(s))" clearLabel="バックログ" /></div>
+      <div v-if="s.meta.mapC(!_.exists(_.project.helpdesk))" class="field"><span>スプリント</span><Combo :bind="Some(s.sprint)" :live="Some(sprintOpts(s))" clearLabel="バックログ" /></div>
       <label class="field"><span>期日</span><input type="date" v-model="s.due"></label>
     </div>
     <a href="#" class="small" @click.prevent="s.more := !s.more.v">{{ s.more.mapC(m => if (m) "▾ 詳細を閉じる" else "▸ 開始日・ラベル・カスタムフィールド") }}</a>

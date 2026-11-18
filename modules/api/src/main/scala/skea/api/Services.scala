@@ -99,33 +99,42 @@ object EventHub:
     payload(kind, Some(p), Option.when(withTask)(task), Some(actor), detail, now)
 
 /** 通知（画面内・メール・PWA のプッシュ通知・連携していればチャット（stui））。 */
-final class NotifyService(activity: ActivityStore, projects: ProjectStore, users: UserStore, sessions: SessionAuth, cfg: ApiConfig,
+final class NotifyService(activity: ActivityStore, projects: ProjectStore, users: UserStore, help: HelpStore, sessions: SessionAuth, cfg: ApiConfig,
     chat: Option[ChatNotifier] = None, push: Option[skea.push.PushService] = None):
 
-  /** users（操作した本人を除く）に通知する。そのプロジェクトを閲覧できない人には送らない。 */
+  /**
+   * users（操作した本人を除く）に通知する。そのプロジェクトを閲覧できない人には送らない。
+   * ヘルプデスクの"ユーザ"には、そのタスクが見えるときの決まった種類の通知だけを送り（内部コメント internal は送らない）、リンクは窓口の画面にする。
+   */
   def send(kind: String, to: Set[UUID], actor: Option[UUID], projectId: UUID, taskId: Option[UUID], commentId: Option[UUID],
-      title: String, body: String, link: String, mailDelay: Int = 0, dedupe: Option[String] = None): IO[Unit] =
+      title: String, body: String, link: String, mailDelay: Int = 0, dedupe: Option[String] = None, internal: Boolean = false): IO[Unit] =
     val targets = (to -- actor.toSet).toList
     IO.whenA(targets.nonEmpty)(skea.observe.Telemetry.span("notify.send", "kind" -> kind) {
       actor.flatTraverse(a => users.find(a).map(_.map(_.name))).flatMap { actorName =>
-        val mailBody = List(
+        def mailBody(link: String) = List(
           actorName.fold("")(n => s"$n さんの操作です。\n\n"),
           title, "", body.take(2000), "", s"${cfg.publicUrl}$link", "",
           "-- ", "skea（通知の設定は画面右上のメニュー →「個人設定」で変えられます）"
         ).mkString("\n")
+        def deliver(uid: UUID, link: String): IO[Unit] =
+          activity.notify(uid, kind, Some(projectId), taskId, commentId, actor, title, body) *>
+            activity.enqueueMail(Some(uid), None, Some(projectId), s"[skea] $title", mailBody(link), dedupe.map(d => s"$d:$uid"), mailDelay) *>
+            skea.observe.Metrics.count("skea.notifications.sent", "kind" -> kind) *>
+            // この端末で受け取る設定（PWA のプッシュ通知）にしていれば、ブラウザを閉じていても知らせる（裏で送る）
+            push.traverse_(_.send(uid, skea.push.PushMessage(title, actorName.fold(body)(n => s"$n さん: $body").take(500), link,
+              Some(s"${taskId.getOrElse(projectId)}:$kind"))).start.void) *>
+            // チャットへは裏で送る（遅れや失敗で操作を止めない）
+            chat.traverse_(_.send(uid, kind, title, actorName.fold(body)(n => s"$n さん: $body"), link).start.void)
         targets.traverse_ { uid =>
-          // そのプロジェクトを閲覧できる有効なユーザーだけに送る
+          // そのプロジェクトを閲覧できる有効なユーザーだけに送る（"ユーザ"は、そのタスクが見えるときだけ）
           sessions.sessionFor(uid).flatMap(_.flatTraverse(s => projects.role(projectId, s))).flatMap {
             case None => IO.unit
-            case Some(_) =>
-              activity.notify(uid, kind, Some(projectId), taskId, commentId, actor, title, body) *>
-                activity.enqueueMail(Some(uid), None, Some(projectId), s"[skea] $title", mailBody, dedupe.map(d => s"$d:$uid"), mailDelay) *>
-                skea.observe.Metrics.count("skea.notifications.sent", "kind" -> kind) *>
-                // この端末で受け取る設定（PWA のプッシュ通知）にしていれば、ブラウザを閉じていても知らせる（裏で送る）
-                push.traverse_(_.send(uid, skea.push.PushMessage(title, actorName.fold(body)(n => s"$n さん: $body").take(500), link,
-                  Some(s"${taskId.getOrElse(projectId)}:$kind"))).start.void) *>
-                // チャットへは裏で送る（遅れや失敗で操作を止めない）
-                chat.traverse_(_.send(uid, kind, title, actorName.fold(body)(n => s"$n さん: $body"), link).start.void)
+            case Some(r) if !r.isAgent =>
+              val allowed =
+                if internal || !NotifyService.requesterKinds(kind) then IO.pure(false)
+                else taskId.fold(IO.pure(false))(help.canSee(_, uid))
+              allowed.ifM(deliver(uid, NotifyService.helpLink(link)), IO.unit)
+            case Some(_) => deliver(uid, link)
           }
         }
       }
@@ -156,6 +165,13 @@ final class NotifyService(activity: ActivityStore, projects: ProjectStore, users
           }
     }
 
+object NotifyService:
+  /** ヘルプデスクの"ユーザ"に送る通知の種類（担当・期限・自動化・項目の更新などのエージェント向けのものは送らない）。 */
+  val requesterKinds: Set[String] = Set(NotificationKind.Comment, NotificationKind.Status, NotificationKind.Mention, NotificationKind.Shared)
+
+  /** エージェントの画面のリンク（/tasks/KEY…）を、"ユーザ"の窓口の画面（/help/t/KEY…）にする。 */
+  def helpLink(link: String): String = if link.startsWith("/tasks/") then "/help/t/" + link.stripPrefix("/tasks/") else link
+
 /** タスクの操作（REST・MCP・自動化で共通）。権限の確認・変更履歴・通知・Webhook・自動化の起動まで行う。 */
 final class TaskService(tasks: TaskStore, projects: ProjectStore, access: Access2, hub: EventHub, notifier: NotifyService, adminGroups: Set[String]):
 
@@ -174,12 +190,12 @@ final class TaskService(tasks: TaskStore, projects: ProjectStore, access: Access
 
   // ---------------------------------------------------------------- 作成
 
-  /** タスクを作る。notify が false なら担当・メンションの通知を出さない（取り込み）。 */
-  def create(op: Op, projectId: UUID, r: CreateTaskReq, notify: Boolean = true): Res[TaskDto] =
-    skea.observe.Telemetry.span("task.create", "project.id" -> projectId.toString)(createImpl(op, projectId, r, notify))
+  /** タスクを作る。notify が false なら担当・メンションの通知を出さない（取り込み）。need は必要な権限（ヘルプデスクの問い合わせは Requester）。 */
+  def create(op: Op, projectId: UUID, r: CreateTaskReq, notify: Boolean = true, need: Role = Role.Edit): Res[TaskDto] =
+    skea.observe.Telemetry.span("task.create", "project.id" -> projectId.toString)(createImpl(op, projectId, r, notify, need))
       .flatTap(res => IO.whenA(res.isRight)(skea.observe.Metrics.count("skea.tasks.created", "via" -> op.via)))
 
-  private def createImpl(op: Op, projectId: UUID, r: CreateTaskReq, notify: Boolean): Res[TaskDto] =
+  private def createImpl(op: Op, projectId: UUID, r: CreateTaskReq, notify: Boolean, need: Role): Res[TaskDto] =
     (needWrite(op), Dates.parse(r.startDate, "開始日"), Dates.parse(r.dueDate, "期日")).tupled match
       case Left(f) => IO.pure(Left(f))
       case Right(_) if r.title.trim.isEmpty => IO.pure(Left(Fail.Invalid("タイトルを入力してください")))
@@ -187,7 +203,7 @@ final class TaskService(tasks: TaskStore, projects: ProjectStore, access: Access
         IO.pure(Left(Fail.Invalid(s"priority は ${Priority.all.mkString(" / ")}、taskType は ${TaskType.all.mkString(" / ")} です")))
       case Right((_, start, due)) if start.zip(due).exists((s, d) => s.isAfter(d)) => IO.pure(Left(Fail.Invalid("開始日は期日より前にしてください")))
       case Right((_, start, due)) =>
-        access.project(op.s, projectId, Role.Edit).flatMap {
+        access.project(op.s, projectId, need).flatMap {
           case Left(f)  => IO.pure(Left(f): Either[Fail, Unit])
           case Right(_) => peopleOk(projectId, r.assigneeId.toList ++ r.reporterId.toList)
         }.flatMap {
@@ -342,10 +358,10 @@ final class TaskService(tasks: TaskStore, projects: ProjectStore, access: Access
       else projects.usersWithRole(projectId, k.drop(2))
     }.map(_.toSet ++ RichText.mentions(doc))
 
-  private def mention(op: Op, t: TaskCore, commentId: Option[UUID], ids: Set[UUID], where: String): IO[Unit] =
+  private def mention(op: Op, t: TaskCore, commentId: Option[UUID], ids: Set[UUID], where: String, internal: Boolean = false): IO[Unit] =
     IO.whenA(ids.nonEmpty)(
       notifier.send(NotificationKind.Mention, ids, Some(op.userId), t.projectId, Some(t.id), commentId,
-        s"${t.key} の${where}でメンションされました", t.title, link(t.key) + commentId.fold("")(c => s"#comment-$c"))
+        s"${t.key} の${where}でメンションされました", t.title, link(t.key) + commentId.fold("")(c => s"#comment-$c"), internal = internal)
     )
 
   def delete(op: Op, task: TaskCore): Res[Unit] =
@@ -359,22 +375,24 @@ final class TaskService(tasks: TaskStore, projects: ProjectStore, access: Access
 
   // ---------------------------------------------------------------- コメント
 
-  def addComment(op: Op, task: TaskCore, body: Json): Res[CommentDto] =
+  /** コメントを追加する。internal は内部コメント（ヘルプデスクのエージェントだけに見え、"ユーザ"には通知しない）。 */
+  def addComment(op: Op, task: TaskCore, body: Json, internal: Boolean = false): Res[CommentDto] =
     val doc = if body.isString then RichText.fromMarkdown(body.asString.get) else body
     if !RichText.valid(doc) || RichText.isBlank(doc) then IO.pure(Left(Fail.Invalid("コメントを入力してください")))
     else if !op.s.canWrite then IO.pure(Left(Fail.Forbidden("このAPIキーは参照専用です")))
     else
       for
-        c <- skea.observe.Telemetry.span("comment.add", "task.id" -> task.id.toString)(tasks.addComment(task.id, Some(op.userId), doc, RichText.toPlain(doc), op.via))
-        _ <- skea.observe.Metrics.count("skea.comments.added", "via" -> op.via)
+        c <- skea.observe.Telemetry.span("comment.add", "task.id" -> task.id.toString)(tasks.addComment(task.id, Some(op.userId), doc, RichText.toPlain(doc), op.via, internal))
+        _ <- skea.observe.Metrics.count("skea.comments.added", "via" -> op.via, "internal" -> internal.toString)
         _ <- hub.emit(op, task.projectId, Some(task.id), EventKind.CommentAdded,
-               Json.obj("commentId" -> c.id.asJson, "text" -> RichText.toPlain(doc).take(500).asJson))
+               Json.obj("commentId" -> c.id.asJson, "text" -> RichText.toPlain(doc).take(500).asJson, "internal" -> internal.asJson))
         _ <- tasks.watch(task.id, op.userId).whenA(op.s.isSession)
         watchers <- tasks.watchers(task.id)
         ms <- mentioned(task.projectId, doc)
-        _ <- mention(op, task, Some(c.id), ms, "コメント")
+        _ <- mention(op, task, Some(c.id), ms, if internal then "内部コメント" else "コメント", internal)
         _ <- notifier.send(NotificationKind.Comment, watchers.toSet -- ms, Some(op.userId), task.projectId, Some(task.id), Some(c.id),
-               s"${task.key} にコメントがありました", RichText.toPlain(doc).take(300), link(task.key) + s"#comment-${c.id}", mailDelay = 60)
+               s"${task.key} に${if internal then "内部コメント" else "コメント"}がありました", RichText.toPlain(doc).take(300),
+               link(task.key) + s"#comment-${c.id}", mailDelay = 60, internal = internal)
       yield Right(c)
 
   def updateComment(op: Op, task: TaskCore, commentId: UUID, body: Json): Res[CommentDto] =
@@ -389,7 +407,7 @@ final class TaskService(tasks: TaskStore, projects: ProjectStore, access: Access
           _ <- hub.emit(op, task.projectId, Some(task.id), EventKind.CommentUpdated, Json.obj("commentId" -> commentId.asJson))
           now    <- mentioned(task.projectId, doc)
           before <- mentioned(task.projectId, old.body)
-          _ <- mention(op, task, Some(commentId), now -- before, "コメント")
+          _ <- mention(op, task, Some(commentId), now -- before, "コメント", old.internal)
           c <- tasks.comment(commentId)
         yield c.toRight(Fail.NotFound("コメントが見つかりません"))
     }

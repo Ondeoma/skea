@@ -11,6 +11,7 @@ import scala.util.{Failure, Success}
 
 // タスクのコメント（アンカーリンク・編集・削除）と、新しいコメントの入力.
 // 入力中のコメントは、少し間を置いてサーバーに下書きとして保存する（ユーザー＋タスクごと. 投稿すると消える）.
+// ヘルプデスクのプロジェクトでは、エージェントだけに見える内部メモとしても投稿できる（"ユーザ"には見えず、通知もしない）.
 case class Props(taskId: UUID, taskKey: String, projectId: UUID, canEdit: Boolean, isAdmin: Boolean)
 
 case class State(list: RV[List[CommentDto]] = RV(Nil),
@@ -20,7 +21,8 @@ case class State(list: RV[List[CommentDto]] = RV(Nil),
                  highlight: RV[String] = RV(""),
                  draft: RV[Option[Option[Json]]] = RV(None),
                  draftNote: RV[String] = RV(""),
-                 pending: RV[Option[(Int, Json)]] = RV(None))
+                 pending: RV[Option[(Int, Json)]] = RV(None),
+                 internal: RV[Boolean] = RV(false))
 
 def initState() = State()
 
@@ -85,7 +87,7 @@ def post(s: State, props: Props): Unit = s.editor.v.foreach { ed =>
     s.busy := true
     s.pending.v.foreach(p => dom.window.clearTimeout(p._1))
     s.pending := None
-    Api.addComment(props.taskId, Editor.fromJs(ed.getJSON())).onComplete {
+    Api.addComment(props.taskId, Editor.fromJs(ed.getJSON()), Store.helpdesk.v && s.internal.v).onComplete {
       case Success(c) =>
         s.busy := false
         s.draftNote := ""
@@ -102,6 +104,8 @@ def post(s: State, props: Props): Unit = s.editor.v.foreach { ed =>
 def replace(s: State, c: CommentDto): Unit = s.list := s.list.v.map(x => if (x.id == c.id) c else x)
 def drop(s: State, id: UUID): Unit = s.list := s.list.v.filterNot(_.id == id)
 def isEditing(s: State, c: CommentDto): Boolean = s.editing.v.contains(c.id)
+def postLabel(s: State) = s.internal.mapC(i => if (i && Store.helpdesk.v) "内部メモを投稿" else "コメントする")
+def newClass(s: State) = s.internal.mapC(i => if (i && Store.helpdesk.v) "new internal" else "new")
 </script>
 
 <template>
@@ -110,14 +114,16 @@ def isEditing(s: State, c: CommentDto): Boolean = s.editing.v.contains(c.id)
       :canEdit="props.canEdit" :isAdmin="props.isAdmin" :highlight="s.highlight.v" :editing="isEditing(s, c)" :onEdit="e => s.editing := e"
       :onChanged="n => replace(s, n)" :onRemoved="id => drop(s, id)" />
     <p v-if="s.list.mapC(_.isEmpty)" class="muted small">コメントはまだありません</p>
-    <div v-for="d in s.draft.mapC(_.toList)" class="new">
+    <div v-for="d in s.draft.mapC(_.toList)" :class="newClass(s)">
       <RichEditor placeholder="コメントを書く（@でメンション、/でメニュー、画像は貼り付けで添付、Ctrl+Enter で送信）" :content="d"
         :projectId="Some(props.projectId)" :taskId="Some(props.taskId)"
         :onReady="h => s.editor := Some(h)" :onSubmit="_ => post(s, props)" :onChange="j => changed(s, props, j)" />
       <div class="row actions">
+        <label v-if="Store.helpdesk" class="small internal-toggle" title="問い合わせした&quot;ユーザ&quot;には見えず、通知もしません">
+          <input type="checkbox" :checked="s.internal.v" @change="s.internal := Dom.checked(event)"> 🔒 内部メモ（エージェントのみ）</label>
         <span class="muted small grow">{{ s.draftNote }}</span>
         <button v-if="s.draftNote.mapC(_.nonEmpty)" class="ghost small" @click="discard(s, props)">下書きを破棄</button>
-        <button class="primary" :disabled="s.busy" @click="post(s, props)">コメントする</button>
+        <button class="primary" :disabled="s.busy" @click="post(s, props)">{{ postLabel(s) }}</button>
       </div>
     </div>
   </div>
@@ -125,5 +131,7 @@ def isEditing(s: State, c: CommentDto): Boolean = s.editing.v.contains(c.id)
 
 <style scoped>
 .new { margin-top: 1rem; }
+.new.internal { background: var(--internal-bg); border-radius: 8px; padding: .4rem; }
+.internal-toggle { display: inline-flex; align-items: center; gap: .3rem; white-space: nowrap; }
 .actions { margin-top: .4rem; }
 </style>

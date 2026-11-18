@@ -5,26 +5,34 @@ import java.util.UUID
 /** UUID として読めれば Some（読めなければ None）。 */
 def uuidOpt(s: String): Option[UUID] = scala.util.Try(UUID.fromString(s.trim)).toOption
 
-/** プロジェクトに対する権限。閲覧(View) < 編集(Edit) < 管理(Admin)。 */
+/**
+ * プロジェクトに対する権限。問い合わせ(Requester) < 閲覧(View) < 編集(Edit) < 管理(Admin)。
+ * Requester はヘルプデスクの"ユーザ"（問い合わせする側）で、閲覧以上を求める API はすべて使えない（自分に見えるタスクだけを /api/help で扱う）。
+ * 閲覧以上のメンバーが"エージェント"（回答する側）。
+ */
 enum Role:
-  case View, Edit, Admin
+  case Requester, View, Edit, Admin
 
 object Role:
   given Ordering[Role] = Ordering.by(_.ordinal)
 
   def parse(s: String): Option[Role] = s.trim.toLowerCase match
-    case "view"  => Some(View)
-    case "edit"  => Some(Edit)
-    case "admin" => Some(Admin)
-    case _       => None
+    case "requester" => Some(Requester)
+    case "view"      => Some(View)
+    case "edit"      => Some(Edit)
+    case "admin"     => Some(Admin)
+    case _           => None
 
   extension (r: Role)
     def asString: String = r match
+      case Requester => "requester"
       case View  => "view"
       case Edit  => "edit"
       case Admin => "admin"
     def >=(o: Role): Boolean = r.ordinal >= o.ordinal
     def <(o: Role): Boolean  = r.ordinal < o.ordinal
+    /** エージェント（閲覧以上）か。 */
+    def isAgent: Boolean = r >= View
 
 /** APIキーのスコープ。 */
 enum Scope:
@@ -91,9 +99,9 @@ object Access:
     if isAdmin then Some(Role.Admin)
     else (userRole.toList ++ groupRoles).maxOption
 
-  /** APIキーのスコープで権限を絞る（read だけのキーは閲覧に落とす）。 */
+  /** APIキーのスコープで権限を絞る（read だけのキーは閲覧に落とす。問い合わせの権限は上げない）。 */
   def limit(s: AuthSession, r: Role): Role =
-    if s.canWrite then r else Role.View
+    if s.canWrite || r < Role.View then r else Role.View
 
 final case class Project(id: UUID, key: String, name: String, description: String, leadId: Option[UUID], archived: Boolean,
     createdAt: java.time.Instant)
