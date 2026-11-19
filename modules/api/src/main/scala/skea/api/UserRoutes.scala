@@ -5,296 +5,416 @@ import io.circe.Json
 import io.circe.syntax.*
 import org.http4s.*
 import org.http4s.circe.CirceEntityCodec.*
-import org.http4s.headers.Location
-import skea.auth.{ApiKeys, Crypto, OidcClient}
+import sbirds.auth.Crypto
+import skea.auth.ApiKeys
 import skea.core.*
 import skea.db.*
 import skea.shared.*
 
 import cats.syntax.all.*
 import org.http4s.headers.`Content-Type`
-import skea.storage.BlobStore
+import sbirds.storage.BlobStore
 
 import java.time.Instant
 import java.util.UUID
 
-/** ログイン（OIDC・開発用）・ログアウト。 */
-final class AuthRoutes(oidc: Option[OidcClient], users: UserStore, activity: ActivityStore, val sessions: SessionAuth, val access: Access2,
-    cfg: ApiConfig) extends RouteSupport:
-
-  /** ログイン後に戻る先（同じサイトのパスだけ）。 */
-  private def safeReturn(s: Option[String]): String =
-    s.filter(p => p.startsWith("/") && !p.startsWith("//") && !p.startsWith("/\\")).getOrElse("/")
-
-  private def redirect(to: String, cookie: Option[ResponseCookie] = None): IO[Response[IO]] =
-    val r = Response[IO](Status.Found).putHeaders(Location(Uri.unsafeFromString(to)))
-    IO.pure(cookie.fold(r)(r.addCookie))
-
-  private val StateCookie = "skea_login_state"
-  private def stateCookie(v: String, maxAge: Long): ResponseCookie =
-    ResponseCookie(StateCookie, v, maxAge = Some(maxAge), path = Some("/auth"), httpOnly = true, secure = cfg.cookieSecure, sameSite = Some(SameSite.Lax))
-
-  private def loggedIn(u: User, via: String, idToken: Option[String] = None): IO[ResponseCookie] =
-    sessions.issue(u, idToken).flatTap(_ => activity.audit(Some(u.id), via, "auth.login", None, Json.obj()) *> skea.observe.Metrics.count("skea.logins", "via" -> via))
+/** 自分の情報・APIキー・通知の設定、ユーザーの一覧、管理画面（ユーザー・エージェント専用アカウント・監査ログ）。 */
+final class UserRoutes(
+  users: UserStore,
+  projects: ProjectStore,
+  activity: ActivityStore,
+  blobs: Option[BlobStore],
+  emoji: EmojiStore,
+  val sessions: SessionAuth,
+  val access: Access2) extends RouteSupport {
 
   val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
-    case req @ GET -> Root / "auth" / "login" =>
-      val back = safeReturn(param(req, "returnTo"))
-      oidc match
-        case Some(o) =>
-          val state = Crypto.randomToken(); val verifier = Crypto.randomToken(48); val nonce = Crypto.randomToken()
-          // state をこのブラウザの Cookie にも入れ、戻ってきたときに照合する（ほかの人が始めたログインに乗せられないように）
-          users.saveLoginState(state, verifier, nonce, back) *> o.authorizationUri(state, verifier, nonce).flatMap(u =>
-            redirect(u.renderString, Some(stateCookie(state, 600))))
-        case None if cfg.devLogin => redirect(s"/login?returnTo=${java.net.URLEncoder.encode(back, "UTF-8")}")
-        case None                 => err(Status.ServiceUnavailable, "OIDC が設定されていません")
-
-    case req @ GET -> Root / "auth" / "callback" =>
-      (oidc, param(req, "code"), param(req, "state")) match
-        case (Some(_), Some(_), Some(state)) if !req.cookies.find(_.name == StateCookie).exists(c => Crypto.constantTimeEquals(c.content, state)) =>
-          err(Status.BadRequest, "ログインの有効期限が切れました。もう一度ログインしてください")
-        case (Some(o), Some(code), Some(state)) =>
-          users.takeLoginState(state).flatMap {
-            case None => err(Status.BadRequest, "ログインの有効期限が切れました。もう一度ログインしてください")
-            case Some((verifier, nonce, back)) =>
-              o.authenticate(code, verifier, nonce, Instant.now()).attempt.flatMap {
-                case Left(e) =>
-                  activity.audit(None, "web", "auth.denied", None, Json.obj("error" -> e.getMessage.asJson)) *>
-                    err(Status.Unauthorized, "ログインできませんでした。もう一度お試しください")
-                case Right(id) if AgentAccounts.isAgent(id.sub) =>
-                  // エージェント専用アカウントの sub ではログインさせない
-                  activity.audit(None, "web", "auth.denied", None, Json.obj("error" -> "agent sub".asJson)) *>
-                    err(Status.Forbidden, "このアカウントではログインできません")
-                case Right(id) =>
-                  for
-                    u <- users.upsert(id.sub, id.name, id.email, id.picture)
-                    r <- if u.disabled then err(Status.Forbidden, "このユーザーは無効にされています")
-                         else users.syncGroups(u.id, id.groups) *> loggedIn(u, "web", id.idToken).flatMap(c =>
-                           redirect(back, Some(c)).map(_.addCookie(stateCookie("", 0))))
-                  yield r
-              }
-          }
-        case (None, _, _) => err(Status.ServiceUnavailable, "OIDC が設定されていません")
-        case _            => err(Status.BadRequest, "code と state が必要です")
-
-    // ログアウト: セッションを消し、IdP にもログアウトを頼む（IdP のログインが残っていると、すぐにログインし直してしまうため）
-    case req @ POST -> Root / "auth" / "logout" =>
-      sessions.revoke(req).flatMap { (idToken, c) =>
-        oidc.flatTraverse(_.logoutUri(idToken, s"${cfg.publicUrl.stripSuffix("/")}/")).flatMap { idp =>
-          Ok(Json.obj("redirect" -> idp.fold("/")(_.renderString).asJson)).map(_.addCookie(c))
-        }
-      }
-
-    // 開発用: 名前だけでログインする（DEV_LOGIN=true のときだけ）
-    case req @ POST -> Root / "auth" / "dev-login" if cfg.devLogin && oidc.isEmpty =>
-      body[Json](req) { j =>
-        val c     = j.hcursor
-        val name  = c.get[String]("name").getOrElse("").trim
-        val admin = c.get[Boolean]("admin").getOrElse(false)
-        if name.isEmpty then err(Status.BadRequest, "名前を入力してください")
-        else
-          for
-            u0 <- users.upsert(s"dev:$name", name, c.get[String]("email").toOption.filter(_.contains("@")), None)
-            _  <- users.update(u0.id, Option.when(admin)(true), None)
-            u  <- users.find(u0.id).map(_.getOrElse(u0))
-            ck <- loggedIn(u, "web")
-            r  <- Ok(Json.obj("redirect" -> safeReturn(c.get[String]("returnTo").toOption).asJson)).map(_.addCookie(ck))
-          yield r
-      }
-
-    case GET -> Root / "api" / "client-config" =>
-      Ok(ClientConfigDto(cfg.devLogin && oidc.isEmpty, cfg.version, attachments = true, mail = true, cfg.linkServices.map(_.provider)))
+    case req @ GET -> Root / "api" / "me" => getMe(req)
+    case req @ PATCH -> Root / "api" / "me" => patchMe(req)
+    case req @ GET -> Root / "api" / "me" / "notify-prefs" => getMeNotifyPrefs(req)
+    case req @ PUT -> Root / "api" / "me" / "notify-prefs" => putMeNotifyPrefs(req)
+    case req @ GET -> Root / "api" / "me" / "api-keys" => getMeApiKeys(req)
+    case req @ POST -> Root / "api" / "me" / "api-keys" => postMeApiKeys(req)
+    case req @ DELETE -> Root / "api" / "me" / "api-keys" / UuidVar(id) => deleteMeApiKey(req, id)
+    case req @ POST -> Root / "api" / "me" / "avatar" => postMeAvatar(req)
+    case req @ DELETE -> Root / "api" / "me" / "avatar" => deleteMeAvatar(req)
+    case req @ GET -> Root / "api" / "users" / UuidVar(id) / "avatar" => getUserAvatar(req, id)
+    case req @ GET -> Root / "api" / "emoji" => getEmoji(req)
+    case req @ POST -> Root / "api" / "emoji" => postEmoji(req)
+    case req @ DELETE -> Root / "api" / "emoji" / name => deleteEmoji(req, name)
+    case req @ GET -> Root / "api" / "emoji" / name / "image" => getEmojiImage(req, name)
+    case req @ GET -> Root / "api" / "users" => getUsers(req)
+    case req @ GET -> Root / "api" / "admin" / "users" => getAdminUsers(req)
+    case req @ PATCH -> Root / "api" / "admin" / "users" / UuidVar(id) => patchAdminUser(req, id)
+    case req @ GET -> Root / "api" / "admin" / "agents" => getAdminAgents(req)
+    case req @ POST -> Root / "api" / "admin" / "agents" => postAdminAgents(req)
+    case req @ PATCH -> Root / "api" / "admin" / "agents" / UuidVar(id) => patchAdminAgent(req, id)
+    case req @ POST -> Root / "api" / "admin" / "agents" / UuidVar(id) / "keys" => postAdminAgentKeys(req, id)
+    case req @ DELETE -> Root / "api" / "admin" / "agents" / UuidVar(id) / "keys" / UuidVar(kid) =>
+      deleteAdminAgentKey(req, id, kid)
+    case req @ GET -> Root / "api" / "admin" / "audit" => getAdminAudit(req)
   }
-
-/** 自分の情報・APIキー・通知の設定、ユーザーの一覧、管理画面（ユーザー・エージェント専用アカウント・監査ログ）。 */
-final class UserRoutes(users: UserStore, projects: ProjectStore, activity: ActivityStore, blobs: Option[BlobStore], emoji: EmojiStore,
-    val sessions: SessionAuth, val access: Access2) extends RouteSupport:
 
   private val avatarTypes = Set("image/png", "image/jpeg", "image/gif", "image/webp")
   private val avatarMaxBytes = 2L * 1024 * 1024
 
   /** アイコンを差し替える（前の画像は消す）。 */
-  private def replaceAvatar(uid: UUID, key: Option[String]): IO[Unit] =
+  private def replaceAvatar(
+    uid: UUID,
+    key: Option[String]
+  ): IO[Unit] = {
     val url = key.map(_ => s"/api/users/$uid/avatar?v=${Crypto.randomToken(6)}")
     users.setAvatar(uid, key, url).flatMap(_.traverse_(old => blobs.traverse_(_.delete(old).handleError(_ => ()))))
+  }
 
-  private def me(s: AuthSession): MeDto =
-    MeDto(s.user.id, s.user.name, s.user.email, s.user.avatarUrl, s.isAdmin, s.user.timezone, s.viaString, s.scopeStrings)
+  private def me(
+    s: AuthSession
+  ): MeDto =
+    MeDto(
+      s.user.id,
+      s.user.name,
+      s.user.email,
+      s.user.avatarUrl,
+      s.isAdmin,
+      s.user.timezone,
+      s.viaString,
+      s.scopeStrings
+    )
 
   /**
    * APIキーを発行する（個人設定の自分のキー・管理画面のエージェント専用アカウントのキーで共通）。owner はキーの持ち主。
    * adminDenied: admin スコープを求められたときに返す応答（None なら許す）。平文のキーはこの応答でだけ返す。
    */
-  private def issueKey(owner: AuthSession, r: CreateApiKeyReq, adminDenied: Option[IO[Response[IO]]])(audit: ApiKeyDto => IO[Unit]): IO[Response[IO]] =
+  private def issueKey(
+    owner: AuthSession,
+    r: CreateApiKeyReq,
+    adminDenied: Option[IO[Response[IO]]]
+  )(
+    audit: ApiKeyDto => IO[Unit]
+  ): IO[Response[IO]] = {
     val scopes = r.scopes.map(_.trim.toLowerCase).distinct
-    if r.name.trim.isEmpty then err(Status.BadRequest, "名前を入力してください")
-    else if scopes.isEmpty || !scopes.forall(ApiScope.all.contains) then err(Status.BadRequest, "スコープは read / write / admin から選んでください")
+    if r.name.trim.isEmpty then err(ErrorCode.NameRequired)
+    else if scopes.isEmpty || !scopes.forall(ApiScope.all.contains) then
+      err(ErrorCode.ApiKeyScopeInvalid)
     else if scopes.contains(ApiScope.Admin) && adminDenied.isDefined then adminDenied.get
     else
       projects.visible(owner).flatMap { vis =>
         val ps = r.projectIds.map(_.distinct.filter(vis.contains)).filter(_.nonEmpty)
-        if r.projectIds.exists(_.nonEmpty) && ps.isEmpty then err(Status.BadRequest, "プロジェクトを選んでください")
-        else
+        if r.projectIds.exists(_.nonEmpty) && ps.isEmpty then err(ErrorCode.ApiKeyProjectRequired)
+        else {
           val (key, prefix) = ApiKeys.generate()
           val exp = r.expiresInDays.filter(_ > 0).map(d => Instant.now().plusSeconds(d.toLong * 86400))
           users.createKey(owner.user.id, r.name.trim, prefix, Crypto.sha256(key), scopes, ps, exp).flatMap(info =>
-            audit(info) *> Created(CreatedApiKeyDto(key, info)))
+            audit(info) *> Created(CreatedApiKeyDto(key, info))
+          )
+        }
       }
+  }
 
   /** 管理画面のエージェント専用アカウントの操作（管理者・画面からのみ。APIキーでは管理できない）。 */
-  private def agentAdmin(req: Request[IO])(f: AuthSession => IO[Response[IO]]): IO[Response[IO]] =
-    admin(req)(s => if s.isSession then f(s) else err(Status.Forbidden, "この操作は画面からのみ行えます"))
+  private def agentAdmin(
+    req: Request[IO]
+  )(
+    f: AuthSession => IO[Response[IO]]
+  ): IO[Response[IO]] =
+    admin(req)(s => if s.isSession then f(s) else err(ErrorCode.SessionOnly))
 
   /** id がエージェント専用アカウントのときだけ処理する（ほかのユーザーは 404）。 */
-  private def withAgent(id: UUID)(f: => IO[Response[IO]]): IO[Response[IO]] =
-    users.isAgent(id).ifM(f, err(Status.NotFound, "エージェント専用アカウントが見つかりません"))
+  private def withAgent(
+    id: UUID
+  )(
+    f: => IO[Response[IO]]
+  ): IO[Response[IO]] =
+    users.isAgent(id).ifM(f, err(ErrorCode.AgentAccountNotFound))
 
-  private def agentAudit(s: AuthSession, action: String, target: UUID, detail: Json): IO[Unit] =
+  private def agentAudit(
+    s: AuthSession,
+    action: String,
+    target: UUID,
+    detail: Json
+  ): IO[Unit] =
     activity.audit(Some(s.user.id), s.viaString, action, Some(target.toString), detail)
 
-  val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
-    case req @ GET -> Root / "api" / "me" => authed(req)(s => Ok(me(s)))
+  private def getMe(
+    req: Request[IO]
+  ): IO[Response[IO]] =
+    authed(req)(s => sessions.appNames(req).flatMap(n => Ok(me(s).copy(appNames = n))))
 
-    case req @ PATCH -> Root / "api" / "me" =>
-      authed(req)(s => body[UpdateMeReq](req)(r =>
-        if r.timezone.exists(tz => scala.util.Try(java.time.ZoneId.of(tz)).isFailure) then err(Status.BadRequest, "タイムゾーンが正しくありません")
-        else users.updateMe(s.user.id, r.name, r.timezone) *> NoContent()))
+  private def patchMe(
+    req: Request[IO]
+  ): IO[Response[IO]] =
+    authed(req)(s =>
+      body[UpdateMeReq](req)(r =>
+        if r.timezone.exists(tz => scala.util.Try(java.time.ZoneId.of(tz)).isFailure) then
+          err(ErrorCode.TimezoneInvalid)
+        else users.updateMe(s.user.id, r.name, r.timezone) *> NoContent()
+      )
+    )
 
-    case req @ GET -> Root / "api" / "me" / "notify-prefs" => authed(req)(s => users.notifyPrefs(s.user.id).flatMap(Ok(_)))
+  private def getMeNotifyPrefs(
+    req: Request[IO]
+  ): IO[Response[IO]] =
+    authed(req)(s => users.notifyPrefs(s.user.id).flatMap(Ok(_)))
 
-    case req @ PUT -> Root / "api" / "me" / "notify-prefs" =>
-      authed(req)(s => body[List[NotifyPrefDto]](req)(ps => users.setNotifyPrefs(s.user.id, ps) *> NoContent()))
+  private def putMeNotifyPrefs(
+    req: Request[IO]
+  ): IO[Response[IO]] =
+    authed(req)(s => body[List[NotifyPrefDto]](req)(ps => users.setNotifyPrefs(s.user.id, ps) *> NoContent()))
 
-    // ---------------------------------------------------------------- APIキー（画面からのみ）
+  private def getMeApiKeys(
+    req: Request[IO]
+  ): IO[Response[IO]] =
+    sessionOnly(req)(s => users.keys(s.user.id).flatMap(Ok(_)))
 
-    case req @ GET -> Root / "api" / "me" / "api-keys" => sessionOnly(req)(s => users.keys(s.user.id).flatMap(Ok(_)))
+  private def postMeApiKeys(
+    req: Request[IO]
+  ): IO[Response[IO]] =
+    sessionOnly(req)(s =>
+      body[CreateApiKeyReq](req)(r =>
+        issueKey(s, r, Option.when(!s.isAdmin)(err(ErrorCode.ApiKeyAdminScopeAdminOnly)))(info =>
+          activity.audit(
+            Some(s.user.id),
+            "web",
+            "api_key.create",
+            Some(info.id.toString),
+            Json.obj("name" -> info.name.asJson, "scopes" -> info.scopes.asJson)
+          )
+        )
+      )
+    )
 
-    case req @ POST -> Root / "api" / "me" / "api-keys" =>
-      sessionOnly(req)(s => body[CreateApiKeyReq](req)(r =>
-        issueKey(s, r, Option.when(!s.isAdmin)(err(Status.Forbidden, "admin スコープは管理者だけが使えます")))(info =>
-          activity.audit(Some(s.user.id), "web", "api_key.create", Some(info.id.toString), Json.obj("name" -> info.name.asJson, "scopes" -> info.scopes.asJson)))))
+  private def deleteMeApiKey(
+    req: Request[IO],
+    id: UUID
+  ): IO[Response[IO]] =
+    sessionOnly(req)(s =>
+      users.revokeKey(s.user.id, id).flatMap {
+        case true => activity.audit(Some(s.user.id), "web", "api_key.revoke", Some(id.toString), Json.obj()) *>
+            NoContent()
+        case false => err(ErrorCode.ApiKeyNotFound)
+      }
+    )
 
-    case req @ DELETE -> Root / "api" / "me" / "api-keys" / UuidVar(id) =>
-      sessionOnly(req)(s => users.revokeKey(s.user.id, id).flatMap {
-        case true  => activity.audit(Some(s.user.id), "web", "api_key.revoke", Some(id.toString), Json.obj()) *> NoContent()
-        case false => err(Status.NotFound, "APIキーが見つかりません")
-      })
-
-    // ---------------------------------------------------------------- ユーザー
-
-    // ---------------------------------------------------------------- アイコン
-    case req @ POST -> Root / "api" / "me" / "avatar" =>
-      sessionOnly(req)(s => blobs match
-        case None => err(Status.ServiceUnavailable, "画像の保存先（S3）が設定されていません")
+  private def postMeAvatar(
+    req: Request[IO]
+  ): IO[Response[IO]] =
+    sessionOnly(req)(s =>
+      blobs match {
+        case None => err(ErrorCode.ImageStorageNotConfigured)
         case Some(store) =>
           withUpload(req, avatarMaxBytes)(up =>
-            if !avatarTypes.contains(up.contentType) then err(Status.BadRequest, "PNG・JPEG・GIF・WebP の画像を選んでください")
-            else
+            if !avatarTypes.contains(up.contentType) then err(ErrorCode.ImageTypeInvalid)
+            else {
               val key = s"avatars/${s.user.id}/${UUID.randomUUID()}"
               store.put(key, up.path, up.contentType) *> replaceAvatar(s.user.id, Some(key)) *>
-                users.find(s.user.id).flatMap(u => Ok(Json.obj("avatarUrl" -> u.flatMap(_.avatarUrl).asJson)))))
+                users.find(s.user.id).flatMap(u => Ok(Json.obj("avatarUrl" -> u.flatMap(_.avatarUrl).asJson)))
+            }
+          )
+      }
+    )
 
-    case req @ DELETE -> Root / "api" / "me" / "avatar" =>
-      sessionOnly(req)(s => replaceAvatar(s.user.id, None) *> NoContent())
+  private def deleteMeAvatar(
+    req: Request[IO]
+  ): IO[Response[IO]] =
+    sessionOnly(req)(s => replaceAvatar(s.user.id, None) *> NoContent())
 
-    case req @ GET -> Root / "api" / "users" / UuidVar(id) / "avatar" =>
-      authed(req)(_ => (users.avatarKey(id), IO.pure(blobs)).tupled.flatMap {
+  private def getUserAvatar(
+    req: Request[IO],
+    id: UUID
+  ): IO[Response[IO]] =
+    authed(req)(_ =>
+      (users.avatarKey(id), IO.pure(blobs)).tupled.flatMap {
         case (Some(key), Some(store)) => store.get(key).flatMap {
-            case None => err(Status.NotFound, "画像が見つかりません")
+            case None => err(ErrorCode.ImageNotFound)
             case Some((meta, bytes)) =>
-              val mt = MediaType.parse(meta.contentType).toOption.filter(m => avatarTypes(s"${m.mainType}/${m.subType}")).getOrElse(MediaType.image.png)
+              val mt = MediaType.parse(meta.contentType).toOption.filter(m =>
+                avatarTypes(s"${m.mainType}/${m.subType}")
+              ).getOrElse(MediaType.image.png)
               IO.pure(Response[IO](Status.Ok).withEntity(Entity.stream(bytes, Some(meta.size)))
-                .putHeaders(`Content-Type`(mt), "X-Content-Type-Options" -> "nosniff", "Cache-Control" -> "private, max-age=86400"))
+                .putHeaders(
+                  `Content-Type`(mt),
+                  "X-Content-Type-Options" -> "nosniff",
+                  "Cache-Control" -> "private, max-age=86400"
+                ))
           }
-        case _ => err(Status.NotFound, "画像が登録されていません")
-      })
+        case _ => err(ErrorCode.ImageNotRegistered)
+      }
+    )
 
-    // ---------------------------------------------------------------- カスタム絵文字（リアクション用。システム全体）
-    case req @ GET -> Root / "api" / "emoji" => authed(req)(_ => emoji.list.flatMap(Ok(_)))
+  private def getEmoji(
+    req: Request[IO]
+  ): IO[Response[IO]] =
+    authed(req)(_ => emoji.list.flatMap(Ok(_)))
 
-    case req @ POST -> Root / "api" / "emoji" =>
-      sessionOnly(req)(s => (blobs, param(req, "name").map(_.toLowerCase)) match
-        case (None, _) => err(Status.ServiceUnavailable, "画像の保存先（S3）が設定されていません")
-        case (_, n) if !n.exists(_.matches("^[a-z0-9_+-]{2,32}$")) => err(Status.BadRequest, "名前は半角の英小文字・数字・_ + - の 2〜32 文字にしてください")
+  private def postEmoji(
+    req: Request[IO]
+  ): IO[Response[IO]] =
+    sessionOnly(req)(s =>
+      (blobs, param(req, "name").map(_.toLowerCase)) match {
+        case (None, _) => err(ErrorCode.ImageStorageNotConfigured)
+        case (_, n) if !n.exists(_.matches("^[a-z0-9_+-]{2,32}$")) =>
+          err(ErrorCode.EmojiNameInvalid)
         case (Some(store), Some(name)) =>
           withUpload(req, 512L * 1024)(up =>
-            if !avatarTypes.contains(up.contentType) then err(Status.BadRequest, "PNG・JPEG・GIF・WebP の画像を選んでください")
-            else
+            if !avatarTypes.contains(up.contentType) then err(ErrorCode.ImageTypeInvalid)
+            else {
               val key = s"emoji/$name-${UUID.randomUUID()}"
               store.put(key, up.path, up.contentType) *> emoji.create(name, key, up.contentType, s.user.id).flatMap {
-                case true  => Created(CustomEmojiDto(name, CustomEmoji.url(name), Some(s.user.name)))
-                case false => store.delete(key).handleError(_ => ()) *> err(Status.Conflict, s"「:$name:」はすでにあります")
-              })
-        case _ => err(Status.BadRequest, "name を指定してください"))
+                case true => Created(CustomEmojiDto(name, CustomEmoji.url(name), Some(s.user.name)))
+                case false => store.delete(key).handleError(_ => ()) *>
+                    err(ErrorCode.EmojiNameTaken, s"「:$name:」はすでにあります")
+              }
+            }
+          )
+        case _ => err(ErrorCode.EmojiNameRequired)
+      }
+    )
 
-    case req @ DELETE -> Root / "api" / "emoji" / name =>
-      sessionOnly(req)(s => emoji.find(name).flatMap {
-        case None => err(Status.NotFound, "絵文字が見つかりません")
-        case Some(e) if !e.createdBy.contains(s.user.id) && !s.isAdmin => err(Status.Forbidden, "登録した人か管理者だけが削除できます")
+  private def deleteEmoji(
+    req: Request[IO],
+    name: String
+  ): IO[Response[IO]] =
+    sessionOnly(req)(s =>
+      emoji.find(name).flatMap {
+        case None => err(ErrorCode.EmojiNotFound)
+        case Some(e) if !e.createdBy.contains(s.user.id) && !s.isAdmin => err(ErrorCode.EmojiDeleteForbidden)
         case Some(e) => emoji.delete(name) *> blobs.traverse_(_.delete(e.s3Key).handleError(_ => ())) *> NoContent()
-      })
+      }
+    )
 
-    case req @ GET -> Root / "api" / "emoji" / name / "image" =>
-      authed(req)(_ => (emoji.find(name), IO.pure(blobs)).tupled.flatMap {
+  private def getEmojiImage(
+    req: Request[IO],
+    name: String
+  ): IO[Response[IO]] =
+    authed(req)(_ =>
+      (emoji.find(name), IO.pure(blobs)).tupled.flatMap {
         case (Some(e), Some(store)) => store.get(e.s3Key).flatMap {
-            case None => err(Status.NotFound, "画像が見つかりません")
+            case None => err(ErrorCode.ImageNotFound)
             case Some((meta, bytes)) =>
               val mt = MediaType.parse(e.contentType).toOption.getOrElse(MediaType.image.png)
               IO.pure(Response[IO](Status.Ok).withEntity(Entity.stream(bytes, Some(meta.size)))
-                .putHeaders(`Content-Type`(mt), "X-Content-Type-Options" -> "nosniff", "Cache-Control" -> "private, max-age=86400"))
+                .putHeaders(
+                  `Content-Type`(mt),
+                  "X-Content-Type-Options" -> "nosniff",
+                  "Cache-Control" -> "private, max-age=86400"
+                ))
           }
-        case _ => err(Status.NotFound, "絵文字が見つかりません")
-      })
+        case _ => err(ErrorCode.EmojiNotFound)
+      }
+    )
 
-    case req @ GET -> Root / "api" / "users" =>
-      authed(req)(_ => users.list(param(req, "q"), includeDisabled = false, intParam(req, "limit", 50, 500)).flatMap(us =>
-        Ok(us.map(u => UserBrief(u.id, u.name, u.avatarUrl)))))
+  private def getUsers(
+    req: Request[IO]
+  ): IO[Response[IO]] =
+    authed(req)(_ =>
+      users.list(param(req, "q"), includeDisabled = false, intParam(req, "limit", 50, 500)).flatMap(us =>
+        Ok(us.map(u => UserBrief(u.id, u.name, u.avatarUrl)))
+      )
+    )
 
-    case req @ GET -> Root / "api" / "admin" / "users" =>
-      admin(req)(_ => users.list(param(req, "q"), includeDisabled = true, 2000).flatMap(Ok(_)))
+  private def getAdminUsers(
+    req: Request[IO]
+  ): IO[Response[IO]] =
+    admin(req)(_ => users.list(param(req, "q"), includeDisabled = true, 2000).flatMap(Ok(_)))
 
-    case req @ PATCH -> Root / "api" / "admin" / "users" / UuidVar(id) =>
-      admin(req)(s => body[UpdateUserReq](req) { r =>
-        if id == s.user.id && (r.isAdmin.contains(false) || r.disabled.contains(true)) then err(Status.BadRequest, "自分自身の管理者権限は外せません")
-        else users.update(id, r.isAdmin, r.disabled).flatMap {
-          case true  => activity.audit(Some(s.user.id), s.viaString, "user.update", Some(id.toString), r.asJson) *> NoContent()
-          case false => err(Status.NotFound, "ユーザーが見つかりません")
+  private def patchAdminUser(
+    req: Request[IO],
+    id: UUID
+  ): IO[Response[IO]] =
+    admin(req)(s =>
+      body[UpdateUserReq](req) { r =>
+        if id == s.user.id && (r.isAdmin.contains(false) || r.disabled.contains(true)) then
+          err(ErrorCode.AdminSelfDemote)
+        else
+          users.update(id, r.isAdmin, r.disabled).flatMap {
+            case true => activity.audit(Some(s.user.id), s.viaString, "user.update", Some(id.toString), r.asJson) *>
+                NoContent()
+            case false => err(ErrorCode.UserNotFound)
+          }
+      }
+    )
+
+  private def getAdminAgents(
+    req: Request[IO]
+  ): IO[Response[IO]] =
+    agentAdmin(req)(_ => users.agents.flatMap(Ok(_)))
+
+  private def postAdminAgents(
+    req: Request[IO]
+  ): IO[Response[IO]] =
+    agentAdmin(req)(s =>
+      body[CreateAgentReq](req)(r =>
+        AgentAccounts.validName(r.name) match {
+          case Left(m) => err(ErrorCode.InvalidInput, m)
+          case Right(name) =>
+            users.createAgent(name).flatTap(id =>
+              agentAudit(s, "agent.create", id, Json.obj("name" -> name.asJson))
+            ).flatMap(id =>
+              users.agents.flatMap(as =>
+                as.find(_.id == id).fold(err(ErrorCode.AgentAccountNotFound))(Created(_))
+              )
+            )
         }
+      )
+    )
+
+  private def patchAdminAgent(
+    req: Request[IO],
+    id: UUID
+  ): IO[Response[IO]] =
+    agentAdmin(req)(s =>
+      body[UpdateAgentReq](req)(r =>
+        r.name.traverse(AgentAccounts.validName) match {
+          case Left(m) => err(ErrorCode.InvalidInput, m)
+          case Right(name) => users.updateAgent(id, name, r.disabled).flatMap {
+              case true => agentAudit(s, "agent.update", id, UpdateAgentReq(name, r.disabled).asJson) *> NoContent()
+              case false => err(ErrorCode.AgentAccountNotFound)
+            }
+        }
+      )
+    )
+
+  private def postAdminAgentKeys(
+    req: Request[IO],
+    id: UUID
+  ): IO[Response[IO]] =
+    agentAdmin(req)(s =>
+      withAgent(id)(body[CreateApiKeyReq](req)(r =>
+        sessions.sessionFor(id).flatMap {
+          case None => err(ErrorCode.AgentKeyForDisabled)
+          case Some(agent) =>
+            issueKey(agent, r, Some(err(ErrorCode.AgentKeyAdminScope)))(info =>
+              agentAudit(
+                s,
+                "agent.key.create",
+                id,
+                Json.obj("key" -> info.id.asJson, "name" -> info.name.asJson, "scopes" -> info.scopes.asJson)
+              )
+            )
+        }
+      ))
+    )
+
+  private def deleteAdminAgentKey(
+    req: Request[IO],
+    id: UUID,
+    kid: UUID
+  ): IO[Response[IO]] =
+    agentAdmin(req)(s =>
+      withAgent(id)(users.revokeKey(id, kid).flatMap {
+        case true => agentAudit(s, "agent.key.revoke", id, Json.obj("key" -> kid.asJson)) *> NoContent()
+        case false => err(ErrorCode.ApiKeyNotFound)
       })
+    )
 
-    // ---------------------------------------------------------------- エージェント専用アカウント（管理者）
-
-    case req @ GET -> Root / "api" / "admin" / "agents" => agentAdmin(req)(_ => users.agents.flatMap(Ok(_)))
-
-    case req @ POST -> Root / "api" / "admin" / "agents" =>
-      agentAdmin(req)(s => body[CreateAgentReq](req)(r => AgentAccounts.validName(r.name) match
-        case Left(m) => err(Status.BadRequest, m)
-        case Right(name) =>
-          users.createAgent(name).flatTap(id => agentAudit(s, "agent.create", id, Json.obj("name" -> name.asJson))).flatMap(id =>
-            users.agents.flatMap(as => as.find(_.id == id).fold(err(Status.NotFound, "エージェント専用アカウントが見つかりません"))(Created(_))))))
-
-    case req @ PATCH -> Root / "api" / "admin" / "agents" / UuidVar(id) =>
-      agentAdmin(req)(s => body[UpdateAgentReq](req)(r => r.name.traverse(AgentAccounts.validName) match
-        case Left(m) => err(Status.BadRequest, m)
-        case Right(name) => users.updateAgent(id, name, r.disabled).flatMap {
-            case true  => agentAudit(s, "agent.update", id, UpdateAgentReq(name, r.disabled).asJson) *> NoContent()
-            case false => err(Status.NotFound, "エージェント専用アカウントが見つかりません")
-          }))
-
-    case req @ POST -> Root / "api" / "admin" / "agents" / UuidVar(id) / "keys" =>
-      agentAdmin(req)(s => withAgent(id)(body[CreateApiKeyReq](req)(r => sessions.sessionFor(id).flatMap {
-        case None => err(Status.BadRequest, "無効にしたアカウントにはキーを発行できません")
-        case Some(agent) =>
-          issueKey(agent, r, Some(err(Status.BadRequest, "エージェント専用アカウントのキーに admin スコープは付けられません")))(info =>
-            agentAudit(s, "agent.key.create", id, Json.obj("key" -> info.id.asJson, "name" -> info.name.asJson, "scopes" -> info.scopes.asJson)))
-      })))
-
-    case req @ DELETE -> Root / "api" / "admin" / "agents" / UuidVar(id) / "keys" / UuidVar(kid) =>
-      agentAdmin(req)(s => withAgent(id)(users.revokeKey(id, kid).flatMap {
-        case true  => agentAudit(s, "agent.key.revoke", id, Json.obj("key" -> kid.asJson)) *> NoContent()
-        case false => err(Status.NotFound, "APIキーが見つかりません")
-      }))
-
-    case req @ GET -> Root / "api" / "admin" / "audit" =>
-      admin(req)(_ => activity.auditLog(param(req, "before").flatMap(_.toLongOption), param(req, "action"), intParam(req, "limit", 100, 500)).flatMap(Ok(_)))
-  }
+  private def getAdminAudit(
+    req: Request[IO]
+  ): IO[Response[IO]] =
+    admin(req)(_ =>
+      activity.auditLog(
+        param(req, "before").flatMap(_.toLongOption),
+        param(req, "action"),
+        intParam(req, "limit", 100, 500)
+      ).flatMap(Ok(_))
+    )
+}

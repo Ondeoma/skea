@@ -35,6 +35,7 @@ def isPortal(path: String): Boolean = path.matches("^/help/[^/]+/?$") && !path.s
 /** ログインしている人の情報を読み、プロジェクトと窓口を読む. 問い合わせする"ユーザ"だけの人は窓口の画面にする. */
 def start(s: State, me: MeDto): Unit = {
   Store.me := Some(me)
+  AppNames.set(me.appNames)
   Observe.setUser(me.id.toString)
   Store.loadAll().onComplete { r =>
     val path = dom.window.location.pathname
@@ -90,8 +91,8 @@ def hasPortals = Store.helpProjects.mapC(_.nonEmpty)
 
 <template>
   <header class="top">
-    <RouterLink v-if="Store.helpOnly.mapC(!_)" to="/" class="logo"><span class="brand"><img src="/logo.svg" alt="" width="28" height="28">skea</span></RouterLink>
-    <RouterLink v-if="Store.helpOnly" to="/help" class="logo"><span class="brand"><img src="/logo.svg" alt="" width="28" height="28">skea</span></RouterLink>
+    <RouterLink v-if="Store.helpOnly.mapC(!_)" to="/" class="logo"><span class="brand"><img :src='AppNames.logo("/logo.svg").v' alt="" height="28" class="brand-logo">{{ AppNames.self }}</span></RouterLink>
+    <RouterLink v-if="Store.helpOnly" to="/help" class="logo"><span class="brand"><img :src='AppNames.logo("/logo.svg").v' alt="" height="28" class="brand-logo">{{ AppNames.self }}</span></RouterLink>
     <div v-if="agentUi" class="psel">
       <Combo :live="Some(Store.projects.mapC(_.map(p => Opt(p.key, p.key + &quot; &quot; + p.name))))" :shows="Some(Router.href.mapC(currentKey))"
         placeholder="プロジェクト…" :small="true" :onChange='k => Router.go("/p/" + k + "/board")' />
@@ -136,7 +137,7 @@ def hasPortals = Store.helpProjects.mapC(_.nonEmpty)
   background: var(--bg); border-bottom: 1px solid var(--line); }
 .brand { font-weight: 800; font-size: 1.15rem; color: var(--accent); letter-spacing: .02em; display: inline-flex; align-items: center; gap: .4rem;
   white-space: nowrap; }
-.brand img { display: block; border-radius: 7px; }
+.brand img { display: block; border-radius: 7px; width: auto; max-width: 120px; }
 /* プロジェクトの切り替え（オートコンプリート） */
 .psel { width: 16rem; max-width: 45vw; flex: 0 1 auto; }
 .spacer { flex: 1; }

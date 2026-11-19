@@ -43,7 +43,7 @@ def mounted(s: State): Unit = {
     if (q.contains("integration=stui") && Store.isProjectAdmin.v) {
       dom.window.history.replaceState(null, "", dom.window.location.pathname)
       if (q.contains("result=connected")) edit(s, None, WebhookKind.Stui)
-      else Store.toast("stui と連携できませんでした", error = true)
+      else Store.toast(s"${AppNames.nameOf("stui")} と連携できませんでした", error = true)
     }
   }
 }
@@ -129,7 +129,7 @@ def headersSample(s: State) = s.sample.mapC(e => List(
 def isShown(s: State, w: WebhookDto) = s.shown.mapC(_.contains(w.id))
 def postedBy(w: WebhookDto): String =
   if (w.kind == WebhookKind.StuiHook) s"stui の受信 Webhook で送ります（${w.owner.fold("")(_.name + " が")}作成）"
-  else w.owner.fold("設定した人がいません（設定し直してください）")(u => s"${u.name} の stui のアカウントで投稿します")
+  else w.owner.fold("設定した人がいません（設定し直してください）")(u => s"${u.name} の ${AppNames.nameOf("stui")} のアカウントで投稿します")
 def eventsLabel(w: WebhookDto): String = if (w.events.isEmpty) "すべて" else w.events.map(EventKind.label).mkString(", ")
 </script>
 
@@ -137,13 +137,13 @@ def eventsLabel(w: WebhookDto): String = if (w.events.isEmpty) "すべて" else 
   <section>
     <div class="row"><h2>Webhook</h2><span class="grow"></span>
       <button class="small" @click="showSample(s, EventKind.TaskUpdated)">{ } 送信内容の見本</button>
-      <button v-if="Store.isProjectAdmin.v && s.stui.v.isDefined" class="small" @click="edit(s, None, WebhookKind.Stui)">💬 stui に通知</button>
+      <button v-if="Store.isProjectAdmin.v && s.stui.v.isDefined" class="small" @click="edit(s, None, WebhookKind.Stui)">💬 {{ AppNames.of("stui") }} に通知</button>
       <button v-if="Store.isProjectAdmin" class="primary small" @click="edit(s, None)">＋ Webhook を追加</button></div>
     <p class="muted small">選んだイベントが起きると、JSON（event・project・task・actor・detail）を POST します。
       本文の HMAC-SHA256（秘密の値で計算）を <code>X-Skea-Signature: sha256=…</code> に付けます。失敗したら間隔を空けて再送します。</p>
-    <p v-if="s.stui.mapC(_.isDefined)" class="muted small">「stui に通知」は、URL や秘密の値を用意しなくても、stui のチャンネルにイベントを文で投稿します（あなたの stui との連携を使います）。</p>
+    <p v-if="s.stui.mapC(_.isDefined)" class="muted small">「{{ AppNames.of("stui") }} に通知」は、URL や秘密の値を用意しなくても、{{ AppNames.of("stui") }} のチャンネルにイベントを文で投稿します（あなたの {{ AppNames.of("stui") }} との連携を使います）。</p>
     <div v-for="w in s.hooks" :key="w.id" class="panel">
-      <div class="row"><b>{{ w.name }}</b><span v-if="WebhookKind.isStui(w.kind)" class="badge">stui</span><span v-if="!w.enabled" class="badge">停止中</span><span class="grow"></span>
+      <div class="row"><b>{{ w.name }}</b><span v-if="WebhookKind.isStui(w.kind)" class="badge">{{ AppNames.of("stui") }}</span><span v-if="!w.enabled" class="badge">停止中</span><span class="grow"></span>
         <button class="small" @click="test(w)">テスト送信</button><button class="small" @click="showDeliveries(s, w)">送信履歴</button>
         <button v-if="Store.isProjectAdmin" class="ghost small" @click="edit(s, Some(w))">編集</button><button v-if="Store.isProjectAdmin" class="ghost small" @click="remove(s, w)">削除</button></div>
       <template v-if="WebhookKind.isStui(w.kind)">
@@ -188,17 +188,17 @@ def eventsLabel(w: WebhookDto): String = if (w.events.isEmpty) "すべて" else 
     </Modal>
     <Modal v-if="s.editing.mapC(_.isDefined)" :onClose="_ => s.editing := None">
       <form @submit.prevent="save(s)">
-          <h2>{{ if (isStui(s).v) "stui に通知" else "Webhook" }}</h2>
+          <h2>{{ if (isStui(s).v) AppNames.nameOf("stui") + " に通知" else "Webhook" }}</h2>
           <div v-if="s.stui.mapC(_.isDefined)" class="field"><span>送り方</span>
             <div class="chips">
               <button type="button" :class='if (isStui(s).v) "chip" else "chip active"' @click="setKind(s, WebhookKind.Url)">Webhook（URL に JSON を送る）</button>
-              <button type="button" :class='if (isStui(s).v) "chip active" else "chip"' @click="setKind(s, WebhookKind.Stui)">💬 stui のチャンネルに投稿</button>
+              <button type="button" :class='if (isStui(s).v) "chip active" else "chip"' @click="setKind(s, WebhookKind.Stui)">💬 {{ AppNames.of("stui") }} のチャンネルに投稿</button>
             </div>
           </div>
           <template v-if="isStui(s).v">
             <div v-if="!stuiReady(s).v" class="panel">
-              <p class="small">stui のチャンネルに投稿するには、あなたの stui のアカウントと連携します（stui の画面で許可します）。</p>
-              <button type="button" class="primary small" @click="connectStui()">stui と連携する</button>
+              <p class="small">{{ AppNames.of("stui") }} のチャンネルに投稿するには、あなたの {{ AppNames.of("stui") }} のアカウントと連携します（{{ AppNames.of("stui") }} の画面で許可します）。</p>
+              <button type="button" class="primary small" @click="connectStui()">{{ AppNames.of("stui") }} と連携する</button>
             </div>
             <template v-else>
               <label class="field"><span>チャンネル（あなたが参加しているもの）</span>
@@ -210,13 +210,13 @@ def eventsLabel(w: WebhookDto): String = if (w.events.isEmpty) "すべて" else 
               <p v-if="s.channelError.mapC(_.nonEmpty)" class="error small">{{ s.channelError }}</p>
               <div v-if="canHook(s).v" class="field"><span>送り方（あなたはこのチャンネルの管理者です）</span>
                 <label class="small"><input type="radio" name="via" :checked="s.useHook.v" @change="s.useHook := true">
-                  stui に受信 Webhook を作って送る（おすすめ. あなたが連携を外したりチャンネルを抜けたりしても届きます）</label>
+                  {{ AppNames.of("stui") }} に受信 Webhook を作って送る（おすすめ. あなたが連携を外したりチャンネルを抜けたりしても届きます）</label>
                 <label class="small"><input type="radio" name="via" :checked="!s.useHook.v" @change="s.useHook := false">
-                  あなたの stui のアカウントの連携で投稿する</label>
+                  あなたの {{ AppNames.of("stui") }} のアカウントの連携で投稿する</label>
               </div>
               <label class="field"><span>名前（任意. 空ならチャンネル名）</span><input type="text" v-model="s.name"></label>
-              <p v-if="canHook(s).v && s.useHook.v" class="muted small">保存すると、このチャンネルに「skea」の受信 Webhook を作り、そこに送ります（stui のチャンネルの設定にも出ます）。</p>
-              <p v-else class="muted small">保存すると、あなたの stui のアカウントの連携で、stui のボット「skea」としてチャンネルに投稿します。</p>
+              <p v-if="canHook(s).v && s.useHook.v" class="muted small">保存すると、このチャンネルに「{{ AppNames.self }}」の受信 Webhook を作り、そこに送ります（{{ AppNames.of("stui") }} のチャンネルの設定にも出ます）。</p>
+              <p v-else class="muted small">保存すると、あなたの {{ AppNames.of("stui") }} のアカウントの連携で、{{ AppNames.of("stui") }} のボット「{{ AppNames.self }}」としてチャンネルに投稿します。</p>
             </template>
           </template>
           <template v-else>

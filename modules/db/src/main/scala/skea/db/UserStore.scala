@@ -12,98 +12,161 @@ import java.time.Instant
 import java.util.UUID
 
 /** ユーザー・グループ・セッション・ログイン途中の状態・APIキー。 */
-final class UserStore(xa: Transactor[IO]) extends TxStore(xa):
+final class UserStore(
+  xa: Transactor[IO]) extends TxStore(xa) {
 
   private val userCols = fr"u.id, u.sub, u.name, u.email, u.avatar_url, u.is_admin, u.disabled, u.timezone"
 
   // ---------------------------------------------------------------- ユーザー
 
   /** ログイン時に作成・更新する。エージェント専用アカウントの sub ではログインさせない。 */
-  def upsert(sub: String, name: String, email: Option[String], avatar: Option[String]): IO[User] =
+  def upsert(
+    sub: String,
+    name: String,
+    email: Option[String],
+    avatar: Option[String]
+  ): IO[User] =
     if AgentAccounts.isAgent(sub) then IO.raiseError(new IllegalArgumentException("エージェント専用アカウントではログインできません"))
-    else tx(
-    sql"""insert into app_user (id, sub, name, email, avatar_url, last_login_at) values (${UUID.randomUUID()}, $sub, $name, $email, $avatar, now())
+    else
+      tx(
+        sql"""insert into app_user (id, sub, name, email, avatar_url, last_login_at) values (${UUID.randomUUID()}, $sub, $name, $email, $avatar, now())
           on conflict (sub) do update set name = excluded.name, email = excluded.email,
             avatar_url = case when app_user.avatar_key is not null then app_user.avatar_url else excluded.avatar_url end,
             last_login_at = now()
           returning id, sub, name, email, avatar_url, is_admin, disabled, timezone""".query[User].unique
-  )
+      )
 
-  def find(id: UUID): IO[Option[User]] = tx(findC(id))
+  def find(
+    id: UUID
+  ): IO[Option[User]] = tx(findC(id))
 
-  def findC(id: UUID): ConnectionIO[Option[User]] =
-    (fr"select" ++ userCols ++ fr"from app_user u where u.id = $id").query[User].option
+  def findC(
+    id: UUID
+  ): ConnectionIO[Option[User]] = (fr"select" ++ userCols ++ fr"from app_user u where u.id = $id").query[User].option
 
   /** ログイン時に IdP の groups クレームで所属を置き換える。 */
-  def syncGroups(userId: UUID, names: List[String]): IO[Unit] = tx {
+  def syncGroups(
+    userId: UUID,
+    names: List[String]
+  ): IO[Unit] = tx {
     val ns = names.map(_.trim).filter(_.nonEmpty).distinct
-    for
+    for {
       ids <- ns.traverse(n =>
         sql"""insert into user_group (id, name) values (${UUID.randomUUID()}, $n)
-              on conflict (name) do update set name = excluded.name returning id""".query[UUID].unique)
+              on conflict (name) do update set name = excluded.name returning id""".query[UUID].unique
+      )
       _ <- sql"delete from group_member where user_id = $userId".update.run
-      _ <- ids.traverse_(g => sql"insert into group_member (group_id, user_id) values ($g, $userId) on conflict do nothing".update.run)
-    yield ()
+      _ <- ids.traverse_(g =>
+        sql"insert into group_member (group_id, user_id) values ($g, $userId) on conflict do nothing".update.run
+      )
+    } yield ()
   }
 
-  def groupsOf(userId: UUID): ConnectionIO[List[Group]] =
+  def groupsOf(
+    userId: UUID
+  ): ConnectionIO[List[Group]] =
     sql"select g.id, g.name from user_group g join group_member m on m.group_id = g.id where m.user_id = $userId order by g.name"
       .query[Group].to[List]
 
-  def withGroups(userId: UUID): IO[Option[(User, List[Group])]] = tx(
+  def withGroups(
+    userId: UUID
+  ): IO[Option[(User, List[Group])]] = tx(
     findC(userId).flatMap(_.filterNot(_.disabled).traverse(u => groupsOf(u.id).map(u -> _)))
   )
 
-  def groupByName(name: String): IO[UUID] = tx(
+  def groupByName(
+    name: String
+  ): IO[UUID] = tx(
     sql"""insert into user_group (id, name) values (${UUID.randomUUID()}, $name)
           on conflict (name) do update set name = excluded.name returning id""".query[UUID].unique
   )
 
   /** 一覧（管理画面・メンションの候補）。q で名前を絞る。 */
-  def list(q: Option[String], includeDisabled: Boolean, limit: Int = 500): IO[List[UserDto]] = tx {
+  def list(
+    q: Option[String],
+    includeDisabled: Boolean,
+    limit: Int = 500
+  ): IO[List[UserDto]] = tx {
     val where = List(
-      q.filter(_.trim.nonEmpty).map(s => fr"(u.name &@~ ${SearchQuery.phrase(s.trim)} or u.name ilike ${"%" + s.trim + "%"} or lower(u.email) = ${s.trim.toLowerCase})"),
+      q.filter(_.trim.nonEmpty).map(s =>
+        fr"(u.name &@~ ${SearchQuery.phrase(s.trim)} or u.name ilike ${"%" + s.trim + "%"} or lower(u.email) = ${s.trim.toLowerCase})"
+      ),
       Option.when(!includeDisabled)(fr"not u.disabled")
     ).flatten
     (fr"""select u.id, u.name, u.email, u.avatar_url, u.is_admin, u.disabled, u.last_login_at,
                  coalesce((select array_agg(g.name order by g.name) from user_group g join group_member m on m.group_id = g.id where m.user_id = u.id), '{}')
           from app_user u""" ++ Sql.whereAnd(where) ++ fr"order by u.name limit $limit")
       .query[(UUID, String, Option[String], Option[String], Boolean, Boolean, Option[Instant], List[String])]
-      .map((id, n, e, a, ad, d, l, g) => UserDto(id, n, e, a, ad, d, l, g)).to[List]
+      .map(
+        (
+          id,
+          n,
+          e,
+          a,
+          ad,
+          d,
+          l,
+          g
+        ) => UserDto(id, n, e, a, ad, d, l, g)
+      ).to[List]
   }
 
-  def update(id: UUID, isAdmin: Option[Boolean], disabled: Option[Boolean]): IO[Boolean] = tx {
+  def update(
+    id: UUID,
+    isAdmin: Option[Boolean],
+    disabled: Option[Boolean]
+  ): IO[Boolean] = tx {
     val sets = List(isAdmin.map(v => fr"is_admin = $v"), disabled.map(v => fr"disabled = $v")).flatten
     if sets.isEmpty then findC(id).map(_.isDefined)
     else
-      for
+      for {
         n <- (fr"update app_user" ++ Sql.set(sets) ++ fr"where id = $id").update.run
-        _ <- if disabled.contains(true) then sql"delete from session where user_id = $id".update.run else 0.pure[ConnectionIO]
-      yield n > 0
+        _ <- if disabled.contains(true) then sql"delete from session where user_id = $id".update.run
+        else 0.pure[ConnectionIO]
+      } yield n > 0
   }
 
   /** 画面から登録したアイコン（S3 のキー）. */
-  def avatarKey(id: UUID): IO[Option[String]] = tx(sql"select avatar_key from app_user where id = $id".query[Option[String]].option.map(_.flatten))
+  def avatarKey(
+    id: UUID
+  ): IO[Option[String]] =
+    tx(sql"select avatar_key from app_user where id = $id".query[Option[String]].option.map(_.flatten))
 
   /** アイコンを登録する（key が None なら外す）. 前のキーを返す. */
-  def setAvatar(id: UUID, key: Option[String], url: Option[String]): IO[Option[String]] = tx(
-    for
+  def setAvatar(
+    id: UUID,
+    key: Option[String],
+    url: Option[String]
+  ): IO[Option[String]] = tx(
+    for {
       old <- sql"select avatar_key from app_user where id = $id".query[Option[String]].option.map(_.flatten)
-      _   <- sql"update app_user set avatar_key = $key, avatar_url = $url where id = $id".update.run
-    yield old
+      _ <- sql"update app_user set avatar_key = $key, avatar_url = $url where id = $id".update.run
+    } yield old
   )
 
-  def updateMe(id: UUID, name: Option[String], timezone: Option[String]): IO[Unit] = tx {
-    val sets = List(name.map(_.trim).filter(_.nonEmpty).map(v => fr"name = $v"), timezone.map(v => fr"timezone = $v")).flatten
-    if sets.isEmpty then ().pure[ConnectionIO] else (fr"update app_user" ++ Sql.set(sets) ++ fr"where id = $id").update.run.void
+  def updateMe(
+    id: UUID,
+    name: Option[String],
+    timezone: Option[String]
+  ): IO[Unit] = tx {
+    val sets =
+      List(name.map(_.trim).filter(_.nonEmpty).map(v => fr"name = $v"), timezone.map(v => fr"timezone = $v")).flatten
+    if sets.isEmpty then ().pure[ConnectionIO]
+    else (fr"update app_user" ++ Sql.set(sets) ++ fr"where id = $id").update.run.void
   }
 
   /** 名前・メール・ID でユーザーを探す（自動化・API の指定用）。 */
-  def resolve(s: String): IO[Option[UUID]] = tx {
+  def resolve(
+    s: String
+  ): IO[Option[UUID]] = tx {
     val t = s.trim
-    uuidOpt(t) match
+    uuidOpt(t) match {
       case Some(id) => sql"select id from app_user where id = $id".query[UUID].option
-      case None => sql"select id from app_user where not disabled and (lower(email) = lower($t) or name = $t or sub = $t) order by last_login_at desc nulls last limit 1".query[UUID].option
+      case None =>
+        sql"select id from app_user where not disabled and (lower(email) = lower($t) or name = $t or sub = $t) order by last_login_at desc nulls last limit 1".query[
+          UUID
+        ].option
+    }
   }
 
   // ---------------------------------------------------------------- エージェント専用アカウント
@@ -111,28 +174,48 @@ final class UserStore(xa: Transactor[IO]) extends TxStore(xa):
   private val agentWhere = fr"sub like ${AgentAccounts.Prefix + "%"}"
 
   /** 作る（メールなし・ログインしない）。 */
-  def createAgent(name: String): IO[UUID] = tx(
-    sql"insert into app_user (id, sub, name) values (${UUID.randomUUID()}, ${AgentAccounts.newSub()}, $name) returning id".query[UUID].unique
+  def createAgent(
+    name: String
+  ): IO[UUID] = tx(
+    sql"insert into app_user (id, sub, name) values (${UUID.randomUUID()}, ${AgentAccounts.newSub()}, $name) returning id".query[
+      UUID
+    ].unique
   )
 
-  def isAgent(id: UUID): IO[Boolean] = tx((fr"select exists(select 1 from app_user where id = $id and" ++ agentWhere ++ fr")").query[Boolean].unique)
+  def isAgent(
+    id: UUID
+  ): IO[Boolean] =
+    tx((fr"select exists(select 1 from app_user where id = $id and" ++ agentWhere ++ fr")").query[Boolean].unique)
 
   /** 一覧（キーは失効したものも含める）。 */
   def agents: IO[List[AgentAccountDto]] = tx(
-    for
+    for {
       us <- (fr"select id, name, disabled, created_at from app_user where" ++ agentWhere ++ fr"order by name")
-              .query[(UUID, String, Boolean, Instant)].to[List]
-      ks <- (fr"""select k.user_id, k.id, k.name, k.prefix, k.scopes, k.created_at, k.last_used_at, k.expires_at, k.revoked_at is not null
-                  from api_key k join app_user u on u.id = k.user_id where""" ++ agentWhere ++ fr"order by k.created_at desc")
-              .query[(UUID, UUID, String, String, List[String], Instant, Option[Instant], Option[Instant], Boolean)].to[List]
-    yield {
+        .query[(UUID, String, Boolean, Instant)].to[List]
+      ks <-
+      (fr"""select k.user_id, k.id, k.name, k.prefix, k.scopes, k.created_at, k.last_used_at, k.expires_at, k.revoked_at is not null
+                  from api_key k join app_user u on u.id = k.user_id where""" ++ agentWhere ++
+        fr"order by k.created_at desc")
+        .query[(UUID, UUID, String, String, List[String], Instant, Option[Instant], Option[Instant], Boolean)].to[List]
+    } yield {
       val byUser = ks.groupMap(_._1)(k => AgentKeyDto(k._2, k._3, k._4, k._5, k._6, k._7, k._8, k._9))
-      us.map((id, n, d, c) => AgentAccountDto(id, n, d, c, byUser.getOrElse(id, Nil)))
+      us.map(
+        (
+          id,
+          n,
+          d,
+          c
+        ) => AgentAccountDto(id, n, d, c, byUser.getOrElse(id, Nil))
+      )
     }
   )
 
   /** 名前の変更・無効化（エージェント専用アカウントだけ）。 */
-  def updateAgent(id: UUID, name: Option[String], disabled: Option[Boolean]): IO[Boolean] = tx {
+  def updateAgent(
+    id: UUID,
+    name: Option[String],
+    disabled: Option[Boolean]
+  ): IO[Boolean] = tx {
     val sets = List(name.map(v => fr"name = $v"), disabled.map(v => fr"disabled = $v")).flatten
     val where = fr"where id = $id and" ++ agentWhere
     if sets.isEmpty then (fr"select count(*) from app_user" ++ where).query[Int].unique.map(_ > 0)
@@ -141,7 +224,9 @@ final class UserStore(xa: Transactor[IO]) extends TxStore(xa):
 
   // ---------------------------------------------------------------- 通知の設定
 
-  def notifyPrefs(userId: UUID): IO[List[NotifyPrefDto]] = tx(
+  def notifyPrefs(
+    userId: UUID
+  ): IO[List[NotifyPrefDto]] = tx(
     sql"select kind, email, chat from notify_pref where user_id = $userId".query[(String, Boolean, Boolean)].to[List]
   ).map { rows =>
     val m = rows.map(r => r._1 -> r).toMap
@@ -149,84 +234,152 @@ final class UserStore(xa: Transactor[IO]) extends TxStore(xa):
   }
 
   /** その種類の通知をチャット（stui）にも送るか（止めていなければ送る）。 */
-  def chatWanted(userId: UUID, kind: String): IO[Boolean] = tx(
-    sql"select not exists(select 1 from notify_pref where user_id = $userId and kind = $kind and not chat)".query[Boolean].unique
+  def chatWanted(
+    userId: UUID,
+    kind: String
+  ): IO[Boolean] = tx(
+    sql"select not exists(select 1 from notify_pref where user_id = $userId and kind = $kind and not chat)".query[
+      Boolean
+    ].unique
   )
 
-  def setNotifyPrefs(userId: UUID, prefs: List[NotifyPrefDto]): IO[Unit] = tx(
+  def setNotifyPrefs(
+    userId: UUID,
+    prefs: List[NotifyPrefDto]
+  ): IO[Unit] = tx(
     prefs.filter(p => NotificationKind.all.contains(p.kind)).traverse_(p =>
       sql"""insert into notify_pref (user_id, kind, email, chat) values ($userId, ${p.kind}, ${p.email}, ${p.chat})
-            on conflict (user_id, kind) do update set email = excluded.email, chat = excluded.chat""".update.run)
+            on conflict (user_id, kind) do update set email = excluded.email, chat = excluded.chat""".update.run
+    )
   )
 
   // ---------------------------------------------------------------- セッション
 
-  def createSession(hash: Array[Byte], userId: UUID, expires: Instant, idToken: Option[String] = None): IO[Unit] = tx(
+  def createSession(
+    hash: Array[Byte],
+    userId: UUID,
+    expires: Instant,
+    idToken: Option[String] = None
+  ): IO[Unit] = tx(
     sql"insert into session (token_hash, user_id, expires_at, id_token) values ($hash, $userId, $expires, $idToken)".update.run.void
   )
 
-  def findSession(hash: Array[Byte], now: Instant): IO[Option[(User, List[Group])]] = tx(
+  def findSession(
+    hash: Array[Byte],
+    now: Instant
+  ): IO[Option[(User, List[Group])]] = tx(
     sql"select user_id from session where token_hash = $hash and expires_at > $now".query[UUID].option.flatMap {
       case None => none[(User, List[Group])].pure[ConnectionIO]
       case Some(uid) => findC(uid).flatMap(_.filterNot(_.disabled).traverse(u => groupsOf(u.id).map(u -> _)))
     }
   )
 
+  /** セッションの id_token（OIDC でログインしたとき）. */
+  def sessionIdToken(
+    hash: Array[Byte]
+  ): IO[Option[String]] =
+    tx(sql"select id_token from session where token_hash = $hash".query[Option[String]].option.map(_.flatten))
+
   /** セッションを消し、IdP からログアウトするための id_token を返す. */
-  def deleteSession(hash: Array[Byte]): IO[Option[String]] =
+  def deleteSession(
+    hash: Array[Byte]
+  ): IO[Option[String]] =
     tx(sql"delete from session where token_hash = $hash returning id_token".query[Option[String]].option.map(_.flatten))
 
-  def purgeExpired(now: Instant): IO[Unit] = tx(
+  def purgeExpired(
+    now: Instant
+  ): IO[Unit] = tx(
     sql"delete from session where expires_at < $now".update.run *>
       sql"delete from login_state where created_at < now() - interval '1 hour'".update.run.void
   )
 
   // ---------------------------------------------------------------- ログイン途中の状態（OIDC）
 
-  def saveLoginState(state: String, verifier: String, nonce: String, returnTo: String): IO[Unit] = tx(
+  def saveLoginState(
+    state: String,
+    verifier: String,
+    nonce: String,
+    returnTo: String
+  ): IO[Unit] = tx(
     sql"insert into login_state (state, verifier, nonce, return_to) values ($state, $verifier, $nonce, $returnTo)".update.run.void
   )
 
   /** 取り出して消す（1回だけ使える）。 */
-  def takeLoginState(state: String): IO[Option[(String, String, String)]] = tx(
+  def takeLoginState(
+    state: String
+  ): IO[Option[(String, String, String)]] = tx(
     sql"""delete from login_state where state = $state and created_at > now() - interval '15 minutes'
           returning verifier, nonce, return_to""".query[(String, String, String)].option
   )
 
   // ---------------------------------------------------------------- APIキー
 
-  private def keyDto(r: (UUID, String, String, List[String], Option[List[UUID]], Instant, Option[Instant], Option[Instant])): ApiKeyDto =
+  private def keyDto(
+    r: (UUID, String, String, List[String], Option[List[UUID]], Instant, Option[Instant], Option[Instant])
+  ): ApiKeyDto =
     ApiKeyDto(r._1, r._2, r._3, r._4, r._5, r._6, r._7, r._8)
 
-  def createKey(userId: UUID, name: String, prefix: String, hash: Array[Byte], scopes: List[String], projects: Option[List[UUID]],
-      expires: Option[Instant]): IO[ApiKeyDto] = tx(
+  def createKey(
+    userId: UUID,
+    name: String,
+    prefix: String,
+    hash: Array[Byte],
+    scopes: List[String],
+    projects: Option[List[UUID]],
+    expires: Option[Instant]
+  ): IO[ApiKeyDto] = tx(
     sql"""insert into api_key (id, user_id, name, prefix, key_hash, scopes, project_ids, expires_at)
-          values (${UUID.randomUUID()}, $userId, $name, $prefix, $hash, ${scopes.toArray}, ${projects.map(_.toArray)}, $expires)
+          values (${UUID.randomUUID()}, $userId, $name, $prefix, $hash, ${scopes.toArray}, ${projects.map(
+        _.toArray
+      )}, $expires)
           returning id, name, prefix, scopes, project_ids, created_at, expires_at, last_used_at"""
-      .query[(UUID, String, String, List[String], Option[List[UUID]], Instant, Option[Instant], Option[Instant])].unique.map(keyDto)
+      .query[(
+        UUID,
+        String,
+        String,
+        List[String],
+        Option[List[UUID]],
+        Instant,
+        Option[Instant],
+        Option[Instant]
+      )].unique.map(keyDto)
   )
 
-  def keys(userId: UUID): IO[List[ApiKeyDto]] = tx(
+  def keys(
+    userId: UUID
+  ): IO[List[ApiKeyDto]] = tx(
     sql"""select id, name, prefix, scopes, project_ids, created_at, expires_at, last_used_at from api_key
           where user_id = $userId and revoked_at is null order by created_at desc"""
-      .query[(UUID, String, String, List[String], Option[List[UUID]], Instant, Option[Instant], Option[Instant])].map(keyDto).to[List]
+      .query[(UUID, String, String, List[String], Option[List[UUID]], Instant, Option[Instant], Option[Instant])].map(
+        keyDto
+      ).to[List]
   )
 
-  def revokeKey(userId: UUID, id: UUID): IO[Boolean] = tx(
-    sql"update api_key set revoked_at = now() where id = $id and user_id = $userId and revoked_at is null".update.run.map(_ > 0)
+  def revokeKey(
+    userId: UUID,
+    id: UUID
+  ): IO[Boolean] = tx(
+    sql"update api_key set revoked_at = now() where id = $id and user_id = $userId and revoked_at is null".update.run.map(
+      _ > 0
+    )
   )
 
   /** 有効なキー。最終使用日時は1分単位で記録する。 */
-  def findKey(hash: Array[Byte], now: Instant): IO[Option[(User, List[Group], UUID, List[String], Option[List[UUID]])]] = tx(
+  def findKey(
+    hash: Array[Byte],
+    now: Instant
+  ): IO[Option[(User, List[Group], UUID, List[String], Option[List[UUID]])]] = tx(
     sql"""select k.id, k.user_id, k.scopes, k.project_ids from api_key k join app_user u on u.id = k.user_id
           where k.key_hash = $hash and k.revoked_at is null and (k.expires_at is null or k.expires_at > $now) and not u.disabled"""
       .query[(UUID, UUID, List[String], Option[List[UUID]])].option.flatMap {
         case None => none.pure[ConnectionIO]
         case Some((kid, uid, scopes, projects)) =>
-          for
-            _  <- sql"update api_key set last_used_at = $now where id = $kid and (last_used_at is null or last_used_at < $now - interval '1 minute')".update.run
-            u  <- findC(uid)
+          for {
+            _ <-
+              sql"update api_key set last_used_at = $now where id = $kid and (last_used_at is null or last_used_at < $now - interval '1 minute')".update.run
+            u <- findC(uid)
             gs <- groupsOf(uid)
-          yield u.map(x => (x, gs, kid, scopes, projects))
+          } yield u.map(x => (x, gs, kid, scopes, projects))
       }
   )
+}

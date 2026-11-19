@@ -57,13 +57,13 @@ def disconnect(s: State, l: LinkServiceDto): Unit = Dialog.confirm(s"${l.name} �
 /** 連携すると何ができるか. stui は通知を送り、skiwi・skawau は貼ったリンクに名前を出す. */
 def isChat(l: LinkServiceDto): Boolean = l.provider == "stui"
 def describe(l: LinkServiceDto): String =
-  if (isChat(l)) s"連携すると、skea の通知（担当・メンション・コメント・期日など）を、${l.name} のボット「skea」からの DM でも受け取れます。"
+  if (isChat(l)) s"連携すると、${AppNames.selfName} の通知（担当・メンション・コメント・期日など）を、${l.name} のボット「${AppNames.selfName}」からの DM でも受け取れます。"
   else {
     val (target, what) = if (l.provider == "skawau") ("ファイル・フォルダ", "ファイル・フォルダの名前") else ("ページ", "ページのタイトル")
     s"連携すると、課題の説明・コメント・リンクに貼った ${l.name} の${target}に、あなたの ${l.name} の権限で${what}を表示します（あなたが見られないものは表示しません）。"
   }
 def lost(p: String): String = p match {
-  case "stui"   => "通知が stui に届かなくなります"
+  case "stui"   => s"通知が ${AppNames.nameOf("stui")} に届かなくなります"
   case "skawau" => "ファイル・フォルダの名前が出なくなります"
   case _        => "ページのタイトルが出なくなります"
 }
