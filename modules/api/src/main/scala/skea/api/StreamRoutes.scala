@@ -22,10 +22,7 @@ enum FeedItem {
     userId: UUID)
 }
 
-final class StreamRoutes(
-  feed: EventFeed,
-  val sessions: SessionAuth,
-  val access: Access2) extends RouteSupport {
+final class StreamRoutes(feed: EventFeed, val sessions: SessionAuth, val access: Access2) extends RouteSupport {
 
   val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
 
@@ -33,14 +30,10 @@ final class StreamRoutes(
     case req @ GET -> Root / "api" / "stream" => getStream(req)
   }
 
-  private def sse(
-    kind: String,
-    data: Json
-  ): ServerSentEvent = ServerSentEvent(data = Some(data.noSpaces), eventType = Some(kind))
+  private def sse(kind: String, data: Json): ServerSentEvent =
+    ServerSentEvent(data = Some(data.noSpaces), eventType = Some(kind))
 
-  private def getStream(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def getStream(req: Request[IO]): IO[Response[IO]] =
     authed(req) { s =>
       val pid = param(req, "projectId").flatMap(uuidOpt)
       pid.fold(IO.pure(Right(()): Either[AppError, Unit]))(p =>

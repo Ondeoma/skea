@@ -13,20 +13,14 @@ import java.time.format.DateTimeFormatter
 import java.util.{Locale, UUID}
 
 /** CSV・Jira からの取り込み（名前でステータス・担当者・ラベル・スプリントを探す。親子は ref でつなぐ）。 */
-final class ImportService(
-  projects: ProjectStore,
-  users: UserStore,
-  svc: TaskService,
-  cfg: ApiConfig) {
+final class ImportService(projects: ProjectStore, users: UserStore, svc: TaskService, cfg: ApiConfig) {
 
   private val jiraDate =
     List("d/MMM/yy h:mm a", "d/MMM/yy H:mm", "d/MMM/yy", "yyyy/MM/dd", "yyyy-MM-dd", "M/d/yyyy", "yyyy年M月d日")
       .map(p => DateTimeFormatter.ofPattern(p, Locale.ENGLISH))
 
   /** 日付（2026-11-15、2026/11/15、Jira の 15/Nov/26 10:00 AM など。時刻は捨てる）。 */
-  def date(
-    s: String
-  ): Option[LocalDate] = {
+  def date(s: String): Option[LocalDate] = {
     val t = s.trim
     if t.isEmpty then None
     else
@@ -43,10 +37,7 @@ final class ImportService(
   }
 
   /** ステータスの名前を、同じ名前か、名前から推した区分のステータスにする。 */
-  private def statusFor(
-    sts: List[StatusDto],
-    name: String
-  ): (Option[UUID], Option[String]) = {
+  private def statusFor(sts: List[StatusDto], name: String): (Option[UUID], Option[String]) = {
     val n = name.trim.toLowerCase
     sts.find(_.name.toLowerCase == n) match {
       case Some(st) => (Some(st.id), None)
@@ -64,11 +55,7 @@ final class ImportService(
     }
   }
 
-  def run(
-    op: Op,
-    projectId: UUID,
-    req: ImportReq
-  ): Res[ImportResultDto] =
+  def run(op: Op, projectId: UUID, req: ImportReq): Res[ImportResultDto] =
     if req.rows.size > 2000 then IO.pure(Left(AppError(ErrorCode.TemplateImportTooMany)))
     else
       (
@@ -77,18 +64,10 @@ final class ImportService(
         projects.audience(projectId, cfg.adminGroups),
         users.list(None, includeDisabled = false, 5000)
       ).tupled.flatMap {
-        (
-          sts,
-          sprints,
-          audience,
-          all
-        ) =>
+        (sts, sprints, audience, all) =>
           val members = audience.map(_.id).toSet
           val warnings = List.newBuilder[String]
-          def who(
-            row: Int,
-            v: Option[String]
-          ): Option[UUID] = v.map(_.trim).filter(_.nonEmpty).flatMap { name =>
+          def who(row: Int, v: Option[String]): Option[UUID] = v.map(_.trim).filter(_.nonEmpty).flatMap { name =>
             val n = name.toLowerCase
             all.filter(u => members(u.id)).find(u =>
               u.name.toLowerCase == n || u.email.exists(_.toLowerCase == n)
@@ -99,17 +78,9 @@ final class ImportService(
           }
           // 親を先に作る（ref が取り込みの中にある親子だけをつなぐ）
           val refs = req.rows.flatMap(_.ref).toSet
-          val (parents, children) = req.rows.zipWithIndex.partition(
-            (
-              r,
-              _
-            ) => !r.parentRef.exists(refs)
-          )
+          val (parents, children) = req.rows.zipWithIndex.partition((r, _) => !r.parentRef.exists(refs))
           val prepared = (parents ++ children).map {
-            (
-              r,
-              i
-            ) =>
+            (r, i) =>
               {
                 val row = i + 1
                 val (st, sw) = r.status.fold((None: Option[UUID], None: Option[String]))(statusFor(sts, _))
@@ -176,11 +147,6 @@ final class ImportService(
                   case Right(t) => (r.ref.fold(keys)(ref => keys.updated(ref, (t.id, t.key))), n + 1)
                   case Left(f) => warnings += s"${row}行目: ${f.message}"; (keys, n)
                 }
-            }.map(
-              (
-                keys,
-                n
-              ) => Right(ImportResultDto(n, keys.view.mapValues(_._2).toMap, sorted))
-            )
+            }.map((keys, n) => Right(ImportResultDto(n, keys.view.mapValues(_._2).toMap, sorted)))
       }
 }

@@ -18,15 +18,9 @@ import scala.concurrent.duration.*
  * Webhook の送信（アウトボックスのワーカー）。本文に HMAC-SHA256 の署名を付ける。
  * 送信先が stui のチャンネル（kind = stui）なら、本文を文にして stui に投稿する（StuiChannels）。
  */
-final class WebhookService(
-  integ: IntegrationStore,
-  http: Client[IO],
-  cfg: ApiConfig,
-  stui: StuiChannels) {
+final class WebhookService(integ: IntegrationStore, http: Client[IO], cfg: ApiConfig, stui: StuiChannels) {
 
-  def validUrl(
-    u: String
-  ): Either[AppError, String] = {
+  def validUrl(u: String): Either[AppError, String] = {
     val t = u.trim
     if t.startsWith("https://") || (cfg.webhookAllowHttp && t.startsWith("http://")) then
       Uri.fromString(t).left.map(_ => AppError(ErrorCode.WebhookUrlInvalid)).map(_ => t)
@@ -41,9 +35,7 @@ final class WebhookService(
    * 送る要求。本文は payload.noSpaces そのもので、署名もこの本文で計算する。
    * CirceEntityCodec を import しているので、文字のエンコーダーを明示しないと本文が JSON の文字列（"{\"event\":...}"）になる。
    */
-  def request(
-    d: DeliveryRow
-  ): Request[IO] = {
+  def request(d: DeliveryRow): Request[IO] = {
     val body = d.payload.noSpaces
     val sig = "sha256=" + Crypto.hmacHex(d.secret, body.getBytes(StandardCharsets.UTF_8))
     Request[IO](Method.POST, Uri.unsafeFromString(d.url))
@@ -57,9 +49,7 @@ final class WebhookService(
       )
   }
 
-  def send(
-    d: DeliveryRow
-  ): IO[(OutboxResult, Option[Int])] =
+  def send(d: DeliveryRow): IO[(OutboxResult, Option[Int])] =
     if WebhookKind.isStui(d.kind) then {
       val m = ChatMessage.format(d.event, d.payload, cfg.publicUrl)
       sbirds.observe.Telemetry.span("webhook.deliver", "webhook.event" -> d.event, "webhook.kind" -> d.kind)(
@@ -68,9 +58,7 @@ final class WebhookService(
       )
     } else sendUrl(d)
 
-  private def sendUrl(
-    d: DeliveryRow
-  ): IO[(OutboxResult, Option[Int])] = {
+  private def sendUrl(d: DeliveryRow): IO[(OutboxResult, Option[Int])] = {
     val req = request(d)
     // 宛先は送るたびに確かめる（名前解決の結果が変わっても内部へ送らない）
     NetGuard.check(req.uri).flatMap {
@@ -85,10 +73,7 @@ final class WebhookService(
           }
         )
     }.flatTap {
-      (
-        r,
-        _
-      ) =>
+      (r, _) =>
         Integrations.called(
           "webhook",
           r match {

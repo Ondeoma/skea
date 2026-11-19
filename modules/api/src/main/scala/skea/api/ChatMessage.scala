@@ -9,15 +9,10 @@ import skea.shared.EventKind
  */
 object ChatMessage {
 
-  final case class Message(
-    title: String,
-    text: String,
-    url: String)
+  final case class Message(title: String, text: String, url: String)
 
   /** task.updated の changes の field の表示名。 */
-  private def fieldLabel(
-    f: String
-  ): String = f match {
+  private def fieldLabel(f: String): String = f match {
     case "title" => "タイトル"
     case "description" => "説明"
     case "assigneeId" => "担当者"
@@ -40,32 +35,20 @@ object ChatMessage {
     case other => other
   }
 
-  private def str(
-    c: ACursor,
-    k: String
-  ): String = c.get[String](k).getOrElse("")
+  private def str(c: ACursor, k: String): String = c.get[String](k).getOrElse("")
 
-  private def minutes(
-    m: Int
-  ): String = {
+  private def minutes(m: Int): String = {
     val (h, mm) = (m / 60, m % 60)
     if h == 0 then s"${mm}分" else if mm == 0 then s"${h}時間" else s"${h}時間${mm}分"
   }
 
   /** 引用（各行の先頭に > を付ける）。長ければ先を省く。 */
-  private def quote(
-    s: String,
-    max: Int = 300
-  ): String = {
+  private def quote(s: String, max: Int = 300): String = {
     val t = if s.length <= max then s else s.take(max) + "…"
     t.linesIterator.map("> " + _).mkString("\n")
   }
 
-  def format(
-    event: String,
-    payload: Json,
-    publicUrl: String
-  ): Message = {
+  def format(event: String, payload: Json, publicUrl: String): Message = {
     val c = payload.hcursor
     val d = c.downField("detail")
     val pKey = c.downField("project").get[String]("key").getOrElse("")
@@ -77,15 +60,8 @@ object ChatMessage {
     val board = if pKey.isEmpty then base else s"$base/p/$pKey/board"
     val taskUrl = tKey.fold(board)(k => s"$base/tasks/$k")
     val taskHead = tKey.fold(tTitle)(k => s"$k $tTitle")
-    def task(
-      icon: String,
-      text: String
-    ) = Message(s"$icon $taskHead", text, taskUrl)
-    def proj(
-      icon: String,
-      head: String,
-      text: String
-    ) = Message(s"$icon [$pKey] $head", text, board)
+    def task(icon: String, text: String) = Message(s"$icon $taskHead", text, taskUrl)
+    def proj(icon: String, head: String, text: String) = Message(s"$icon [$pKey] $head", text, board)
     event match {
       case EventKind.TaskCreated => task("🆕", s"$actor がタスクを作成しました")
       case EventKind.TaskUpdated =>

@@ -20,20 +20,19 @@ import java.util.UUID
 import scala.concurrent.duration.*
 
 /** 自動化のルールの実行。イベント（EventHub が automation_queue に積んだもの）・定期・手動・受信 Webhook から起動する。 */
-final class AutomationEngine(
-  integ: IntegrationStore,
-  tasks: TaskStore,
-  projects: ProjectStore,
-  users: UserStore,
-  activity: ActivityStore,
-  search: SearchStore,
-  sessions: SessionAuth,
-  access: Access2,
-  svc: TaskService,
-  notifier: NotifyService,
-  http: Client[IO],
-  lock: JobLock,
-  cfg: ApiConfig) {
+final class AutomationEngine(integ: IntegrationStore,
+                             tasks: TaskStore,
+                             projects: ProjectStore,
+                             users: UserStore,
+                             activity: ActivityStore,
+                             search: SearchStore,
+                             sessions: SessionAuth,
+                             access: Access2,
+                             svc: TaskService,
+                             notifier: NotifyService,
+                             http: Client[IO],
+                             lock: JobLock,
+                             cfg: ApiConfig) {
 
   private val zone = Op.zone(cfg.timezone)
 
@@ -66,11 +65,7 @@ final class AutomationEngine(
     )
 
   /** query に一致するタスクごとに（query がなければタスクなしで1回）実行待ちに積む。 */
-  private def fireFor(
-    r: RuleRow,
-    query: Option[String],
-    event: Json
-  ): IO[Int] =
+  private def fireFor(r: RuleRow, query: Option[String], event: Json): IO[Int] =
     query match {
       case None => integ.enqueueRun(r.id, None, None, event, 0).as(1)
       case Some(q) =>
@@ -90,11 +85,7 @@ final class AutomationEngine(
     }
 
   /** タスク画面のボタンから。 */
-  def manual(
-    op: Op,
-    ruleId: UUID,
-    task: TaskCore
-  ): Res[Unit] =
+  def manual(op: Op, ruleId: UUID, task: TaskCore): Res[Unit] =
     integ.rule(ruleId).flatMap {
       case Some(r)
           if r.projectId == task.projectId && r.enabled && r.trigger.hcursor.get[String]("type").contains("manual") =>
@@ -109,10 +100,7 @@ final class AutomationEngine(
     }
 
   /** 受信 Webhook（POST /hooks/automation/{token}）。本文は {{webhookData}} で参照できる。taskKey を送るとそのタスクで実行する。 */
-  def incoming(
-    token: String,
-    body: Json
-  ): Res[Int] =
+  def incoming(token: String, body: Json): Res[Int] =
     integ.ruleByToken(token).flatMap {
       case None => IO.pure(Left(AppError(ErrorCode.AutomationRuleNotFound)))
       case Some(r) =>
@@ -131,9 +119,7 @@ final class AutomationEngine(
     }
 
   /** 実行するユーザー（システム管理者でも、自動化ではプロジェクトのメンバーとしての権限だけで動かす）。 */
-  private def runAs(
-    r: RuleRow
-  ): IO[Option[AuthSession]] =
+  private def runAs(r: RuleRow): IO[Option[AuthSession]] =
     r.runAs.orElse(
       r.createdBy
     ).flatTraverse(u => sessions.sessionFor(u, AuthVia.Automation(r.id))).map(_.map(_.copy(isAdmin = false)))
@@ -143,49 +129,29 @@ final class AutomationEngine(
       "AUTOMATION_MAIL_DOMAINS"
     ).toList.flatMap(_.split(',').toList).map(_.trim.toLowerCase.stripPrefix("@")).filter(_.nonEmpty).toSet
 
-  private def mailAllowed(
-    addr: String
-  ): IO[Boolean] =
+  private def mailAllowed(addr: String): IO[Boolean] =
     if mailDomains.contains(addr.substring(addr.lastIndexOf('@') + 1).toLowerCase) then IO.pure(true)
     else users.list(Some(addr), includeDisabled = false, 5).map(_.exists(_.email.exists(_.equalsIgnoreCase(addr))))
 
   /** 実行するユーザーが編集できるタスクか。 */
-  private def editable(
-    run: Run,
-    id: UUID
-  ): IO[Boolean] = access.task(run.op.s, id.toString, Role.Edit).map(_.isRight)
+  private def editable(run: Run, id: UUID): IO[Boolean] = access.task(run.op.s, id.toString, Role.Edit).map(_.isRight)
 
   // ---------------------------------------------------------------- 実行
 
   /** 実行中の状態。 */
-  private final class Run(
-    val rule: RuleRow,
-    val op: Op,
-    var ctx: Json,
-    var log: Vector[Json],
-    var steps: Int) {
-    def add(
-      level: String,
-      msg: String
-    ): Unit = log = log :+ Json.obj("level" -> level.asJson, "message" -> msg.asJson)
+  private final class Run(val rule: RuleRow, val op: Op, var ctx: Json, var log: Vector[Json], var steps: Int) {
+    def add(level: String, msg: String): Unit = log = log :+ Json.obj("level" -> level.asJson, "message" -> msg.asJson)
     def today: LocalDate = LocalDate.now(zone)
-    def render(
-      s: String
-    ): String = Automation.render(s, ctx, today)
+    def render(s: String): String = Automation.render(s, ctx, today)
     def taskId: Option[UUID] = ctx.hcursor.downField("task").get[UUID]("id").toOption
-    def setVar(
-      name: String,
-      v: Json
-    ): Unit = {
+    def setVar(name: String, v: Json): Unit = {
       val vars =
         ctx.hcursor.downField("vars").focus.flatMap(_.asObject).getOrElse(io.circe.JsonObject.empty).add(name, v)
       ctx = ctx.deepMerge(Json.obj("vars" -> Json.fromJsonObject(vars), name -> v))
     }
   }
 
-  private def runQueued(
-    q: QueueRow
-  ): IO[Unit] =
+  private def runQueued(q: QueueRow): IO[Unit] =
     integ.rule(q.ruleId).flatMap {
       case None => IO.unit
       case Some(r) if !r.enabled => IO.unit
@@ -228,16 +194,14 @@ final class AutomationEngine(
         }
     }
 
-  private def execute(
-    r: RuleRow,
-    op: Op,
-    trigger: Trigger,
-    cond: Option[Condition],
-    actions: List[Action],
-    taskId: Option[UUID],
-    event: Json,
-    actorId: Option[UUID]
-  ): IO[Unit] = {
+  private def execute(r: RuleRow,
+                      op: Op,
+                      trigger: Trigger,
+                      cond: Option[Condition],
+                      actions: List[Action],
+                      taskId: Option[UUID],
+                      event: Json,
+                      actorId: Option[UUID]): IO[Unit] = {
     val started = Instant.now()
     for {
       actor <- actorId.flatTraverse(users.find)
@@ -273,26 +237,17 @@ final class AutomationEngine(
     } yield ()
   }
 
-  private def changedFields(
-    event: Json
-  ): List[String] =
+  private def changedFields(event: Json): List[String] =
     event.hcursor.downField(
       "detail"
     ).downField("changes").as[List[Json]].getOrElse(Nil).flatMap(_.hcursor.get[String]("field").toOption)
 
-  private def triggerMatches(
-    t: Trigger,
-    event: Json
-  ): Boolean = t match {
+  private def triggerMatches(t: Trigger, event: Json): Boolean = t match {
     case Trigger.TaskUpdated(fields) =>
       fields.isEmpty || changedFields(event).exists(f => fields.exists(x => x == f || f.startsWith(x)))
     case Trigger.StatusChanged(from, to) =>
       val d = event.hcursor.downField("detail")
-      def hit(
-        names: List[String],
-        name: String,
-        cat: String
-      ) =
+      def hit(names: List[String], name: String, cat: String) =
         names.isEmpty || names.exists(n => n == name || n == cat || StatusCategory.label(cat) == n)
       hit(from, d.get[String]("from").getOrElse(""), d.get[String]("fromCategory").getOrElse("")) &&
       hit(to, d.get[String]("to").getOrElse(""), d.get[String]("toCategory").getOrElse(""))
@@ -300,9 +255,7 @@ final class AutomationEngine(
   }
 
   /** スマート値の task の中身。 */
-  def taskContext(
-    id: UUID
-  ): IO[Option[Json]] =
+  def taskContext(id: UUID): IO[Option[Json]] =
     tasks.detail(id).flatMap(_.traverse { d =>
       val t = d.task
       for {
@@ -315,9 +268,8 @@ final class AutomationEngine(
         rp <- t.reporter.flatTraverse(u => users.find(u.id))
       } yield {
         val st = statuses.find(_.id == t.statusId)
-        def user(
-          u: Option[User]
-        ) = u.fold(Json.Null)(x => Json.obj("id" -> x.id.asJson, "name" -> x.name.asJson, "email" -> x.email.asJson))
+        def user(u: Option[User]) =
+          u.fold(Json.Null)(x => Json.obj("id" -> x.id.asJson, "name" -> x.name.asJson, "email" -> x.email.asJson))
         Json.obj(
           "id" -> t.id.asJson,
           "key" -> t.key.asJson,
@@ -355,12 +307,8 @@ final class AutomationEngine(
           "links" -> d.links.map(l =>
             Json.obj("kind" -> l.kind.asJson, "key" -> l.target.map(_.key).asJson, "url" -> l.url.asJson)
           ).asJson,
-          "fields" -> Json.fromFields(d.fields.toList.flatMap(
-            (
-              fid,
-              v
-            ) => defs.find(_.id.toString == fid).map(_.name -> v)
-          )),
+          "fields" ->
+            Json.fromFields(d.fields.toList.flatMap((fid, v) => defs.find(_.id.toString == fid).map(_.name -> v))),
           "commits" -> d.commits.map(c => Json.obj("sha" -> c.sha.asJson, "message" -> c.message.asJson)).asJson,
           "url" -> s"${cfg.publicUrl}/tasks/${t.key}".asJson,
           "project" -> p.fold(Json.Null)(x => Json.obj("key" -> x.key.asJson, "name" -> x.name.asJson)),
@@ -370,19 +318,12 @@ final class AutomationEngine(
       }
     })
 
-  private def refresh(
-    run: Run
-  ): IO[Unit] =
+  private def refresh(run: Run): IO[Unit] =
     run.taskId.flatTraverse(taskContext).map(_.foreach(t =>
       run.ctx = run.ctx.deepMerge(Json.obj("task" -> Json.Null)).deepMerge(Json.obj("task" -> t))
     ))
 
-  private def withTask(
-    run: Run,
-    what: String
-  )(
-    f: TaskCore => IO[Unit]
-  ): IO[Unit] =
+  private def withTask(run: Run, what: String)(f: TaskCore => IO[Unit]): IO[Unit] =
     run.taskId match {
       case None => IO(run.add("warn", s"$what: 対象のタスクがありません"))
       case Some(id) => tasks.core(id).flatMap {
@@ -391,28 +332,16 @@ final class AutomationEngine(
         }
     }
 
-  private def report[A](
-    run: Run,
-    what: String
-  )(
-    r: Res[A]
-  ): IO[Unit] =
+  private def report[A](run: Run, what: String)(r: Res[A]): IO[Unit] =
     r.map {
       case Left(f) => run.add("error", s"$what: ${f.message}")
       case Right(_) => run.add("info", what)
     }
 
-  private def update(
-    run: Run,
-    what: String,
-    ch: TaskChanges
-  ): IO[Unit] =
+  private def update(run: Run, what: String, ch: TaskChanges): IO[Unit] =
     withTask(run, what)(t => report(run, what)(svc.update(run.op, t, ch)) *> refresh(run))
 
-  private def userOf(
-    run: Run,
-    spec: String
-  ): IO[Option[UUID]] = {
+  private def userOf(run: Run, spec: String): IO[Option[UUID]] = {
     val v = run.render(spec).trim
     v match {
       case "" | "none" | "unassigned" => IO.pure(None)
@@ -423,25 +352,17 @@ final class AutomationEngine(
     }
   }
 
-  private def runActions(
-    run: Run,
-    actions: List[Action]
-  ): IO[Unit] =
+  private def runActions(run: Run, actions: List[Action]): IO[Unit] =
     actions.traverse_(a =>
       if run.steps >= MaxSteps then IO(run.add("error", "アクションの数が上限を超えました")) else IO(run.steps += 1) *> step(run, a)
     )
 
-  private def step(
-    run: Run,
-    a: Action
-  ): IO[Unit] = a match {
+  private def step(run: Run, a: Action): IO[Unit] = a match {
     case Action.SetField(field, value) =>
       val v =
         value.asString.map(run.render).map(Json.fromString).getOrElse(Automation.renderJson(value, run.ctx, run.today))
       val s = v.asString.map(_.trim)
-      def date(
-        what: String
-      ) = s.filter(_.nonEmpty) match {
+      def date(what: String) = s.filter(_.nonEmpty) match {
         case None => Right(None)
         case Some(x) => scala.util.Try(LocalDate.parse(x)).toOption.toRight(s"$what を日付として読めません: $x").map(Some(_))
       }
@@ -657,12 +578,7 @@ final class AutomationEngine(
         case Left(_) => IO(run.add("error", s"URL が正しくありません: $u"))
         case Right(uri) =>
           val m = Method.fromString(method).getOrElse(Method.POST)
-          val hs = headers.toList.map(
-            (
-              k,
-              v
-            ) => Header.Raw(org.typelevel.ci.CIString(k), run.render(v))
-          )
+          val hs = headers.toList.map((k, v) => Header.Raw(org.typelevel.ci.CIString(k), run.render(v)))
           val b =
             body.map(j => j.asString.map(run.render).getOrElse(Automation.renderJson(j, run.ctx, run.today).noSpaces))
           val req0 = Request[IO](m, uri).putHeaders(hs).putHeaders("User-Agent" -> "skea-automation")

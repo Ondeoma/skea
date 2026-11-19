@@ -19,41 +19,21 @@ object HelpdeskApiSpec {
   /** テスト用のメモリ上の保存先（S3 の代わり）。 */
   final class MemoryBlobs extends sbirds.storage.BlobStore {
     private val m = new java.util.concurrent.ConcurrentHashMap[String, (String, Array[Byte])]()
-    def put(
-      key: String,
-      file: fs2.io.file.Path,
-      contentType: String
-    ): IO[Unit] =
+    def put(key: String, file: fs2.io.file.Path, contentType: String): IO[Unit] =
       IO.blocking(java.nio.file.Files.readAllBytes(file.toNioPath)).map(b => m.put(key, (contentType, b))).void
-    def get(
-      key: String
-    ): IO[Option[(sbirds.storage.BlobMeta, fs2.Stream[IO, Byte])]] =
-      IO(Option(m.get(key)).map(
-        (
-          ct,
-          b
-        ) => (sbirds.storage.BlobMeta(ct, b.length.toLong), fs2.Stream.emits(b.toSeq))
-      ))
-    def delete(
-      key: String
-    ): IO[Unit] = IO(m.remove(key)).void
-    def copy(
-      from: String,
-      to: String
-    ): IO[Boolean] = IO(Option(m.get(from)).exists(v => { m.put(to, v); true }))
+    def get(key: String): IO[Option[(sbirds.storage.BlobMeta, fs2.Stream[IO, Byte])]] =
+      IO(Option(m.get(key)).map((ct, b) => (sbirds.storage.BlobMeta(ct, b.length.toLong), fs2.Stream.emits(b.toSeq))))
+    def delete(key: String): IO[Unit] = IO(m.remove(key)).void
+    def copy(from: String, to: String): IO[Boolean] = IO(Option(m.get(from)).exists(v => { m.put(to, v); true }))
     def keys: Set[String] = scala.jdk.CollectionConverters.SetHasAsScala(m.keySet()).asScala.toSet
   }
 }
 
 class HelpdeskApiSpec extends ApiDbSuite {
 
-  private def doc(
-    text: String
-  ): Json = RichText.fromPlain(text)
+  private def doc(text: String): Json = RichText.fromPlain(text)
 
-  private def keys(
-    j: Json
-  ): Set[String] = j.asArray.toList.flatten.flatMap(_.hcursor.get[String]("key").toOption).toSet
+  private def keys(j: Json): Set[String] = j.asArray.toList.flatten.flatMap(_.hcursor.get[String]("key").toOption).toSet
 
   withEnv("\"ユーザ\"には内部コメント・共有されていないタスク・エージェント向けの API が見えない") { env =>
     for {
@@ -107,10 +87,8 @@ class HelpdeskApiSpec extends ApiDbSuite {
       _ = assertEquals(rep._2.hcursor.get[Boolean]("internal").toOption, Some(false))
 
       // ---- 窓口の検索: 自分に見えるものの公開の部分だけで探す（内部コメント・共有されていないタスクの語では当たらない）
-      search = (
-        t: String,
-        q: String
-      ) => env.get(t, s"/api/help/projects/$pid/search?q=${java.net.URLEncoder.encode(q, "UTF-8")}")
+      search = (t: String, q: String) =>
+        env.get(t, s"/api/help/projects/$pid/search?q=${java.net.URLEncoder.encode(q, "UTF-8")}")
       hits = (j: Json) => j.hcursor.downField("hits").as[List[HelpHitDto]].toOption.getOrElse(Nil).map(_.task.key).toSet
       _ <- search(rt, "リセット").map(r => assertEquals(hits(r._2), Set(reqKey), "公開の回答の語で当たる"))
       _ <- search(rt, "パスワード").map(r => assertEquals(hits(r._2), Set(reqKey), "説明の語で当たる"))
@@ -206,13 +184,8 @@ class HelpdeskApiSpec extends ApiDbSuite {
   }
 
   withEnv("ヘルプデスク: すべてのタスクが1つのアクティブスプリントに入り、ボードには完了して日数を過ぎたタスクを出さない") { env =>
-    def sprintOf(
-      key: String
-    ) = env.tasks.coreByKey(key).map(_.flatMap(_.sprintId))
-    def boardKeys(
-      t: String,
-      pid: UUID
-    ) = env.get(t, s"/api/projects/$pid/board").map(r =>
+    def sprintOf(key: String) = env.tasks.coreByKey(key).map(_.flatMap(_.sprintId))
+    def boardKeys(t: String, pid: UUID) = env.get(t, s"/api/projects/$pid/board").map(r =>
       r._2.hcursor.downField("tasks").as[List[TaskDto]].toOption.getOrElse(Nil).map(_.key).toSet
     )
     for {
@@ -288,12 +261,8 @@ class HelpdeskApiSpec extends ApiDbSuite {
 
   withEnv("窓口の共有: 自分のメールと同じドメインのグループにだけ共有でき、共有したグループの人はウォッチャーになる") { env =>
     val dom = s"${UUID.randomUUID().toString.take(6)}.example.jp"
-    def gid(
-      r: (Status, Json)
-    ) = r._2.hcursor.get[UUID]("id").toOption.get
-    def shares(
-      j: Json
-    ) = j.as[HelpSharesDto].toOption.get
+    def gid(r: (Status, Json)) = r._2.hcursor.get[UUID]("id").toOption.get
+    def shares(j: Json) = j.as[HelpSharesDto].toOption.get
     for {
       a <- env.user("エージェント")
       (agent, at) = a
@@ -473,9 +442,7 @@ class HelpdeskApiSpec extends ApiDbSuite {
 
   withEnv("新しい問い合わせの内容に貼った画像: 送信前は本人だけが見られ、送信すると問い合わせの添付になる") { env =>
     val png = Array[Byte](-119, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3)
-    def imgDoc(
-      src: String
-    ) = Json.obj(
+    def imgDoc(src: String) = Json.obj(
       "type" -> "doc".asJson,
       "content" -> Json.arr(
         Json.obj(

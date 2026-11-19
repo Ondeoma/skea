@@ -24,11 +24,7 @@ import scala.concurrent.duration.*
  * stui のチャンネルへの投稿（プロジェクトの通知. docs/stui-integration.md）。設定した人が stui と OAuth で連携したトークンで、
  * その人が参加しているチャンネルに、stui のボット「skea」として投稿する（POST /api/apps/notify の channel）。
  */
-final class StuiChannels(
-  tokens: IntegrationTokenStore,
-  http: Client[IO],
-  box: SecretBox,
-  cfg: ApiConfig) {
+final class StuiChannels(tokens: IntegrationTokenStore, http: Client[IO], box: SecretBox, cfg: ApiConfig) {
 
   private val Provider = "stui"
 
@@ -36,22 +32,14 @@ final class StuiChannels(
 
   def configured: Boolean = service.isDefined
 
-  private def token(
-    userId: UUID
-  ): IO[Option[String]] = tokens.token(userId, Provider).map(_.flatMap(box.decrypt))
+  private def token(userId: UUID): IO[Option[String]] = tokens.token(userId, Provider).map(_.flatMap(box.decrypt))
 
-  def connected(
-    userId: UUID
-  ): IO[Boolean] = token(userId).map(_.isDefined)
+  def connected(userId: UUID): IO[Boolean] = token(userId).map(_.isDefined)
 
-  private def bearer(
-    t: String
-  ) = Authorization(Credentials.Token(AuthScheme.Bearer, t))
+  private def bearer(t: String) = Authorization(Credentials.Token(AuthScheme.Bearer, t))
 
   /** 投稿先に選べるチャンネル（参加している公開・非公開のもの. アーカイブしたものは除く. admin はチャンネルの管理者）。連携していなければ Left。 */
-  def channels(
-    userId: UUID
-  ): IO[Either[AppError, List[StuiChannelDto]]] =
+  def channels(userId: UUID): IO[Either[AppError, List[StuiChannelDto]]] =
     service match {
       case None => IO.pure(Left(AppError(ErrorCode.StuiNotConfigured)))
       case Some(c) =>
@@ -83,11 +71,7 @@ final class StuiChannels(
         }
     }
 
-  private def withToken[A](
-    userId: UUID
-  )(
-    f: (LinkService, String) => IO[Either[String, A]]
-  ): IO[Either[String, A]] =
+  private def withToken[A](userId: UUID)(f: (LinkService, String) => IO[Either[String, A]]): IO[Either[String, A]] =
     service.fold(IO.pure(Left("stui との連携が設定されていません")))(c =>
       token(userId).flatMap(_.fold(IO.pure(Left("stui と連携してください")))(t => f(c, t)))
     )
@@ -99,16 +83,9 @@ final class StuiChannels(
    */
   private val hookPath = "/hooks/[A-Za-z0-9_=-]+$".r
 
-  def createHook(
-    userId: UUID,
-    channelId: String,
-    name: String
-  ): IO[Either[String, (String, String)]] =
+  def createHook(userId: UUID, channelId: String, name: String): IO[Either[String, (String, String)]] =
     withToken(userId) {
-      (
-        c,
-        t
-      ) =>
+      (c, t) =>
         {
           val body = Json.obj(
             "channelId" -> channelId.asJson,
@@ -128,12 +105,7 @@ final class StuiChannels(
             else
               r.as[Json].map { j =>
                 (j.hcursor.downField("hook").get[String]("id"), j.hcursor.get[String]("url")).tupled.toOption
-                  .flatMap(
-                    (
-                      id,
-                      url
-                    ) => hookPath.findFirstIn(url).map(path => id -> (c.server.stripSuffix("/") + path))
-                  )
+                  .flatMap((id, url) => hookPath.findFirstIn(url).map(path => id -> (c.server.stripSuffix("/") + path)))
                   .toRight("stui の応答が正しくありません")
               }
           }.timeout(15.seconds).handleError(_ => Left("stui に接続できませんでした"))
@@ -141,27 +113,17 @@ final class StuiChannels(
     }
 
   /** 作った受信 Webhook を消す（作った人の連携で. 消せなくても続ける）。 */
-  def deleteHook(
-    userId: UUID,
-    hookId: String
-  ): IO[Unit] =
-    withToken(userId)(
-      (
-        c,
-        t
-      ) =>
-        http.run(Request[IO](
-          Method.DELETE,
-          Uri.unsafeFromString(s"${c.server}/api/hooks/incoming/$hookId")
-        ).putHeaders(bearer(t)))
-          .use(_ => IO.pure(Right(()))).timeout(10.seconds)
+  def deleteHook(userId: UUID, hookId: String): IO[Unit] =
+    withToken(userId)((c, t) =>
+      http.run(Request[IO](
+        Method.DELETE,
+        Uri.unsafeFromString(s"${c.server}/api/hooks/incoming/$hookId")
+      ).putHeaders(bearer(t)))
+        .use(_ => IO.pure(Right(()))).timeout(10.seconds)
     ).void.handleError(_ => ())
 
   /** stui の受信 Webhook に送る（トークンは使わない. URL が鍵）。 */
-  def postHook(
-    url: String,
-    m: ChatMessage.Message
-  ): IO[(OutboxResult, Option[Int])] = {
+  def postHook(url: String, m: ChatMessage.Message): IO[(OutboxResult, Option[Int])] = {
     val text = (if m.url.nonEmpty then s"**[${m.title}](${m.url})**" else s"**${m.title}**") + "\n\n" +
       m.text.take(2000)
     Uri.fromString(url) match {
@@ -174,29 +136,21 @@ final class StuiChannels(
             case Right(403) => (OutboxResult.Skip("このチャンネルには投稿できません（アーカイブされたかもしれません）"), Some(403))
             case Right(code) => (OutboxResult.Retry(s"HTTP $code"), Some(code))
             case Left(e) => (OutboxResult.Retry(s"stui に接続できませんでした（${e.getClass.getSimpleName}）"), None)
-          }.flatTap(
-            (
-              r,
-              _
-            ) =>
-              Integrations.called(
-                "stui.hook",
-                r match {
-                  case OutboxResult.Sent => "ok"
-                  case _: OutboxResult.Retry => "retry"
-                  case _ => "skip"
-                }
-              )
+          }.flatTap((r, _) =>
+            Integrations.called(
+              "stui.hook",
+              r match {
+                case OutboxResult.Sent => "ok"
+                case _: OutboxResult.Retry => "retry"
+                case _ => "skip"
+              }
+            )
           )
     }
   }
 
   /** チャンネルに投稿する（Webhook の送信のワーカーから）。 */
-  def post(
-    ownerId: Option[UUID],
-    channelId: String,
-    m: ChatMessage.Message
-  ): IO[(OutboxResult, Option[Int])] =
+  def post(ownerId: Option[UUID], channelId: String, m: ChatMessage.Message): IO[(OutboxResult, Option[Int])] =
     (service, ownerId) match {
       case (None, _) => IO.pure((OutboxResult.Skip("stui との連携が設定されていません（STUI_URL など）"), None))
       case (_, None) => IO.pure((OutboxResult.Skip("設定した人がいません（設定し直してください）"), None))
@@ -225,19 +179,15 @@ final class StuiChannels(
               case Right(code) => IO.pure((OutboxResult.Retry(s"HTTP $code"), Some(code)))
               case Left(e) => IO.pure((OutboxResult.Retry(s"stui に接続できませんでした（${e.getClass.getSimpleName}）"), None))
             }
-        }.flatTap(
-          (
-            r,
-            _
-          ) =>
-            Integrations.called(
-              "stui.channel",
-              r match {
-                case OutboxResult.Sent => "ok"
-                case _: OutboxResult.Retry => "retry"
-                case _ => "skip"
-              }
-            )
+        }.flatTap((r, _) =>
+          Integrations.called(
+            "stui.channel",
+            r match {
+              case OutboxResult.Sent => "ok"
+              case _: OutboxResult.Retry => "retry"
+              case _ => "skip"
+            }
+          )
         )
     }
 }

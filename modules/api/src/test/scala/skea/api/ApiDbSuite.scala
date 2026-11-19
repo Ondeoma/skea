@@ -37,8 +37,7 @@ abstract class ApiDbSuite extends CatsEffectSuite {
   protected def apiCfg: ApiConfig = ApiConfig(adminGroups = Set.empty, cookieSecure = false, publicUrl = publicUrl)
 
   /** 本番と同じ組み立てのルート（外部への送信はしない）。 */
-  protected final class Env(
-    xa: doobie.Transactor[IO]) {
+  protected final class Env(xa: doobie.Transactor[IO]) {
     val users = new UserStore(xa)
     val projects = new ProjectStore(xa)
     val tasks = new TaskStore(xa)
@@ -91,10 +90,7 @@ abstract class ApiDbSuite extends CatsEffectSuite {
         new UserRoutes(users, projects, activity, Some(blobs), emoji, sess, access).routes
     val app: HttpApp[IO] = (rest <+> new McpRoutes(rest, sess, publicUrl).routes).orNotFound
 
-    def user(
-      name: String,
-      email: Option[String] = None
-    ): IO[(User, String)] =
+    def user(name: String, email: Option[String] = None): IO[(User, String)] =
       users.upsert(
         s"test:${UUID.randomUUID()}",
         name,
@@ -104,32 +100,20 @@ abstract class ApiDbSuite extends CatsEffectSuite {
         .flatMap(u => sess.issue(u).map(c => (u, c.content)))
 
     /** 送って、状態と JSON の本文を返す。 */
-    def send(
-      req: Request[IO]
-    ): IO[(Status, Json)] =
+    def send(req: Request[IO]): IO[(Status, Json)] =
       app.run(req).flatMap(r =>
         r.bodyText.compile.string.map(b => (r.status, io.circe.parser.parse(b).getOrElse(Json.Null)))
       )
 
     /** 画面（Cookie のセッション）から送る。 */
-    def call(
-      token: String,
-      method: Method,
-      path: String,
-      body: Option[Json] = None
-    ): IO[(Status, Json)] = {
+    def call(token: String, method: Method, path: String, body: Option[Json] = None): IO[(Status, Json)] = {
       val base = Request[IO](method, Uri.unsafeFromString(path)).addCookie("skea_session", token).putHeaders("Origin" ->
         publicUrl)
       send(body.fold(base)(base.withEntity(_)))
     }
 
     /** APIキー（Bearer）で送る。 */
-    def callKey(
-      key: String,
-      method: Method,
-      path: String,
-      body: Option[Json] = None
-    ): IO[(Status, Json)] = {
+    def callKey(key: String, method: Method, path: String, body: Option[Json] = None): IO[(Status, Json)] = {
       val base = Request[IO](
         method,
         Uri.unsafeFromString(path)
@@ -137,19 +121,10 @@ abstract class ApiDbSuite extends CatsEffectSuite {
       send(body.fold(base)(base.withEntity(_)))
     }
 
-    def get(
-      token: String,
-      path: String
-    ) = call(token, Method.GET, path)
+    def get(token: String, path: String) = call(token, Method.GET, path)
 
     /** ファイルを multipart/form-data（file）で送る。 */
-    def upload(
-      token: String,
-      path: String,
-      name: String,
-      ct: MediaType,
-      bytes: Array[Byte]
-    ): IO[(Status, Json)] =
+    def upload(token: String, path: String, name: String, ct: MediaType, bytes: Array[Byte]): IO[(Status, Json)] =
       org.http4s.multipart.Multiparts.forSync[IO].flatMap(_.multipart(Vector(
         org.http4s.multipart.Part.fileData[IO](
           "file",
@@ -164,23 +139,11 @@ abstract class ApiDbSuite extends CatsEffectSuite {
         ).addCookie("skea_session", token).putHeaders("Origin" -> publicUrl)
           .withEntity(mp).putHeaders(mp.headers))
       }
-    def post(
-      token: String,
-      path: String,
-      body: Json
-    ) = call(token, Method.POST, path, Some(body))
-    def put(
-      token: String,
-      path: String,
-      body: Json
-    ) = call(token, Method.PUT, path, Some(body))
+    def post(token: String, path: String, body: Json) = call(token, Method.POST, path, Some(body))
+    def put(token: String, path: String, body: Json) = call(token, Method.PUT, path, Some(body))
   }
 
-  protected def withEnv(
-    name: String
-  )(
-    body: Env => IO[Unit]
-  ): Unit =
+  protected def withEnv(name: String)(body: Env => IO[Unit]): Unit =
     test(name) {
       if cfg.isEmpty then IO(assume(false, "TEST_DATABASE_URL が未設定")) else body(new Env(xaFixture()))
     }

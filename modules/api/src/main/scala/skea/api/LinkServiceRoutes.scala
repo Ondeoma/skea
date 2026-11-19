@@ -25,14 +25,13 @@ import scala.concurrent.duration.*
  * 各ユーザーが OAuth 2.0（認可コード + PKCE）で相手のサービスを許可し、skea は本人の権限で、貼られたリンク先の名前
  * （skiwi のページのタイトル・skawau のファイル名）を読む。stui には通知を送る（ChatNotifier）。トークンは APP_SECRET の鍵で暗号化して保存する。
  */
-final class LinkServiceRoutes(
-  store: IntegrationTokenStore,
-  http: Client[IO],
-  box: SecretBox,
-  cache: LinkServiceRoutes.Cache,
-  val sessions: SessionAuth,
-  val access: Access2,
-  cfg: ApiConfig)
+final class LinkServiceRoutes(store: IntegrationTokenStore,
+                              http: Client[IO],
+                              box: SecretBox,
+                              cache: LinkServiceRoutes.Cache,
+                              val sessions: SessionAuth,
+                              val access: Access2,
+                              cfg: ApiConfig)
   extends RouteSupport {
   import LinkServiceRoutes.*
 
@@ -52,24 +51,15 @@ final class LinkServiceRoutes(
 
   private val CacheMillis = 60.seconds.toMillis
 
-  private def callback(
-    p: String
-  ): String = s"${cfg.publicUrl}/api/integrations/$p/callback"
+  private def callback(p: String): String = s"${cfg.publicUrl}/api/integrations/$p/callback"
 
-  private def basic(
-    c: LinkService
-  ) = Authorization(BasicCredentials(c.clientId, c.clientSecret))
+  private def basic(c: LinkService) = Authorization(BasicCredentials(c.clientId, c.clientSecret))
 
-  private def redirect(
-    to: String
-  ): IO[Response[IO]] = IO.pure(Response[IO](Status.Found).putHeaders(Location(Uri.unsafeFromString(to))))
+  private def redirect(to: String): IO[Response[IO]] =
+    IO.pure(Response[IO](Status.Found).putHeaders(Location(Uri.unsafeFromString(to))))
 
   /** 個人設定へ戻る（結果を integration=…&result=… に付ける）。 */
-  private def done(
-    p: String,
-    returnTo: String,
-    result: String
-  ): IO[Response[IO]] = {
+  private def done(p: String, returnTo: String, result: String): IO[Response[IO]] = {
     // 同じサイトのパスだけ。開発中（DEV_LOGIN）は画面の開発サーバー（http://localhost:…）にも戻せる
     val devOrigin = cfg.devLogin && Uri.fromString(returnTo).toOption.exists(u =>
       u.scheme.exists(_.value.toString == "http") &&
@@ -81,35 +71,21 @@ final class LinkServiceRoutes(
     redirect(back + (if back.contains("?") then "&" else "?") + s"integration=$p&result=$result")
   }
 
-  private def service(
-    p: String
-  ): Option[LinkService] = cfg.linkServices.find(_.provider == p)
+  private def service(p: String): Option[LinkService] = cfg.linkServices.find(_.provider == p)
 
-  private def withService(
-    p: String
-  )(
-    f: LinkService => IO[Response[IO]]
-  ): IO[Response[IO]] =
+  private def withService(p: String)(f: LinkService => IO[Response[IO]]): IO[Response[IO]] =
     service(p).fold(err(ErrorCode.LinkServiceNotConfigured, s"$p との連携は設定されていません"))(f)
 
-  private def tokenOf(
-    uid: UUID,
-    p: String
-  ): IO[Option[String]] = store.token(uid, p).map(_.flatMap(box.decrypt))
+  private def tokenOf(uid: UUID, p: String): IO[Option[String]] = store.token(uid, p).map(_.flatMap(box.decrypt))
 
-  private def forget(
-    uid: UUID,
-    p: String
-  ): IO[Unit] = cache.update(_.filterNot(k => k._1._1 == p && k._1._2 == uid))
+  private def forget(uid: UUID, p: String): IO[Unit] = cache.update(_.filterNot(k => k._1._1 == p && k._1._2 == uid))
 
   /** 本人のトークンでリンク先の名前をまとめて読む（60秒キャッシュ。見られないものも「なし」として覚える）。トークンが失効していたら None。 */
-  private def lookup(
-    c: LinkService,
-    kind: Lookup,
-    uid: UUID,
-    token: String,
-    ids: List[UUID]
-  ): IO[Option[List[LinkTitleDto]]] =
+  private def lookup(c: LinkService,
+                     kind: Lookup,
+                     uid: UUID,
+                     token: String,
+                     ids: List[UUID]): IO[Option[List[LinkTitleDto]]] =
     for {
       now <- IO.realTime.map(_.toMillis)
       known <-
@@ -142,9 +118,7 @@ final class LinkServiceRoutes(
       }
     } yield res
 
-  private def getIntegrationsLinks(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def getIntegrationsLinks(req: Request[IO]): IO[Response[IO]] =
     authed(req)(s =>
       sessions.appNames(req).flatMap(names =>
         cfg.linkServices.traverse(c =>
@@ -156,10 +130,7 @@ final class LinkServiceRoutes(
       ).flatMap(Ok(_))
     )
 
-  private def getIntegrationConnect(
-    req: Request[IO],
-    p: String
-  ): IO[Response[IO]] =
+  private def getIntegrationConnect(req: Request[IO], p: String): IO[Response[IO]] =
     sessionOnly(req)(s =>
       withService(p) { c =>
         val state = Crypto.randomToken(24)
@@ -184,10 +155,7 @@ final class LinkServiceRoutes(
       }
     )
 
-  private def getIntegrationCallback(
-    req: Request[IO],
-    p: String
-  ): IO[Response[IO]] =
+  private def getIntegrationCallback(req: Request[IO], p: String): IO[Response[IO]] =
     sessionOnly(req)(s =>
       withService(p) { c =>
         param(req, "state").fold(IO.pure(None))(st => store.takeState(st, p)).flatMap {
@@ -223,10 +191,7 @@ final class LinkServiceRoutes(
       }
     )
 
-  private def deleteIntegrationConnection(
-    req: Request[IO],
-    p: String
-  ): IO[Response[IO]] =
+  private def deleteIntegrationConnection(req: Request[IO], p: String): IO[Response[IO]] =
     sessionOnly(req)(s =>
       withService(p) { c =>
         tokenOf(s.user.id, p).flatMap(_.traverse_ { t =>
@@ -239,10 +204,7 @@ final class LinkServiceRoutes(
       }
     )
 
-  private def postIntegrationTitles(
-    req: Request[IO],
-    p: String
-  ): IO[Response[IO]] =
+  private def postIntegrationTitles(req: Request[IO], p: String): IO[Response[IO]] =
     authed(req)(s =>
       body[LinkTitlesReq](req) { r =>
         val ids = r.ids.distinct
@@ -277,49 +239,27 @@ object LinkServiceRoutes {
   def newCache: IO[Cache] = Ref.of(Map.empty)
 
   /** リンク先の名前の問い合わせ: API、応答の配列の名前、1件の読み方。 */
-  final case class Lookup(
-    path: String,
-    listKey: String,
-    parse: Json => Option[LinkTitleDto])
+  final case class Lookup(path: String, listKey: String, parse: Json => Option[LinkTitleDto])
 
   /** サービスごとの違い: 表示名、求めるスコープ、名前の問い合わせ（stui は通知を送るだけなので持たない）。 */
-  final case class Kind(
-    name: String,
-    scope: String,
-    lookup: Option[Lookup])
+  final case class Kind(name: String, scope: String, lookup: Option[Lookup])
 
-  private def field[A: Decoder](
-    j: Json,
-    k: String
-  ): Option[A] = j.hcursor.get[A](k).toOption
+  private def field[A: Decoder](j: Json, k: String): Option[A] = j.hcursor.get[A](k).toOption
 
   /** skiwi: {"pages":[{"id","workspaceId","title","icon"}]} */
-  private def skiwiPage(
-    j: Json
-  ): Option[LinkTitleDto] =
-    (field[UUID](j, "id"), field[String](j, "title")).mapN(
-      (
-        id,
-        t
-      ) => LinkTitleDto(id, t, field[Option[String]](j, "icon").flatten.orElse(Some("📄")))
+  private def skiwiPage(j: Json): Option[LinkTitleDto] =
+    (field[UUID](j, "id"), field[String](j, "title")).mapN((id, t) =>
+      LinkTitleDto(id, t, field[Option[String]](j, "icon").flatten.orElse(Some("📄")))
     )
 
   /** skawau: {"files":[{"id","name","folder"}]} */
-  private def skawauFile(
-    j: Json
-  ): Option[LinkTitleDto] =
-    (field[UUID](j, "id"), field[String](j, "name")).mapN(
-      (
-        id,
-        n
-      ) => LinkTitleDto(id, n, Some(fileIcon(n, field[Boolean](j, "folder").contains(true))))
+  private def skawauFile(j: Json): Option[LinkTitleDto] =
+    (field[UUID](j, "id"), field[String](j, "name")).mapN((id, n) =>
+      LinkTitleDto(id, n, Some(fileIcon(n, field[Boolean](j, "folder").contains(true))))
     )
 
   /** ファイル名の拡張子から選ぶアイコン。 */
-  def fileIcon(
-    name: String,
-    folder: Boolean
-  ): String =
+  def fileIcon(name: String, folder: Boolean): String =
     if folder then "📁"
     else {
       val ext = name.split('.').toList match {

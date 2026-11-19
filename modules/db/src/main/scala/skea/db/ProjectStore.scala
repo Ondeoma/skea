@@ -17,32 +17,19 @@ import java.time.{Instant, LocalDate}
 import java.util.UUID
 
 /** プロジェクトと、その設定（メンバー・ステータス・ラベル・スプリント・カスタムフィールド）。 */
-final class ProjectStore(
-  xa: Transactor[IO]) extends TxStore(xa) {
+final class ProjectStore(xa: Transactor[IO]) extends TxStore(xa) {
 
   // ---------------------------------------------------------------- 共通
 
   /** プロジェクトの設定（ステータス・カスタムフィールド・スプリント）の並び順を ids の順にする。 */
-  private def reorderC(
-    table: String,
-    projectId: UUID,
-    ids: List[UUID]
-  ): ConnectionIO[Unit] =
-    ids.zipWithIndex.traverse_(
-      (
-        id,
-        i
-      ) =>
-        (fr"update" ++ Fragment.const(table) ++
-          fr"set position = $i where id = $id and project_id = $projectId").update.run
+  private def reorderC(table: String, projectId: UUID, ids: List[UUID]): ConnectionIO[Unit] =
+    ids.zipWithIndex.traverse_((id, i) =>
+      (fr"update" ++ Fragment.const(table) ++
+        fr"set position = $i where id = $id and project_id = $projectId").update.run
     )
 
   /** 名前が一意の設定を更新する（名前の重複は Conflict、対象がなければ NotFound）。 */
-  private def updateUniqueC(
-    q: Fragment,
-    what: String,
-    name: String
-  ): ConnectionIO[Either[AppError, Unit]] =
+  private def updateUniqueC(q: Fragment, what: String, name: String): ConnectionIO[Either[AppError, Unit]] =
     q.update.run.attemptSql.map {
       case Left(_) => Left(AppError(ErrorCode.NameTaken, s"$what「$name」はすでにあります"))
       case Right(0) => Left(AppError(ErrorCode.ItemNotFound, what))
@@ -52,10 +39,7 @@ final class ProjectStore(
   // ---------------------------------------------------------------- 権限
 
   /** 利用者のプロジェクトでの実効権限（APIキーのスコープ・対象プロジェクトも反映）。見えなければ None。 */
-  def roleC(
-    projectId: UUID,
-    s: AuthSession
-  ): ConnectionIO[Option[Role]] =
+  def roleC(projectId: UUID, s: AuthSession): ConnectionIO[Option[Role]] =
     if !s.allowsProject(projectId) then none[Role].pure[ConnectionIO]
     else {
       val gids = s.groups.map(_.id).toArray
@@ -72,28 +56,17 @@ final class ProjectStore(
         else Access.effective(s.isAdmin, ur.flatMap(Role.parse), gr.flatMap(Role.parse)).map(Access.limit(s, _))
     }
 
-  def role(
-    projectId: UUID,
-    s: AuthSession
-  ): IO[Option[Role]] = tx(roleC(projectId, s))
+  def role(projectId: UUID, s: AuthSession): IO[Option[Role]] = tx(roleC(projectId, s))
 
   /** 見えるプロジェクトの ID と権限（エージェントとして。ヘルプデスクの"ユーザ"として参加しているものは含めない）。 */
-  def visibleC(
-    s: AuthSession
-  ): ConnectionIO[Map[UUID, Role]] = membershipsC(s).map(_.filter(_._2.isAgent))
+  def visibleC(s: AuthSession): ConnectionIO[Map[UUID, Role]] = membershipsC(s).map(_.filter(_._2.isAgent))
 
-  def visible(
-    s: AuthSession
-  ): IO[Map[UUID, Role]] = tx(visibleC(s))
+  def visible(s: AuthSession): IO[Map[UUID, Role]] = tx(visibleC(s))
 
   /** 参加しているプロジェクトの ID と権限（ヘルプデスクの"ユーザ"を含む）。 */
-  def memberships(
-    s: AuthSession
-  ): IO[Map[UUID, Role]] = tx(membershipsC(s))
+  def memberships(s: AuthSession): IO[Map[UUID, Role]] = tx(membershipsC(s))
 
-  def membershipsC(
-    s: AuthSession
-  ): ConnectionIO[Map[UUID, Role]] = {
+  def membershipsC(s: AuthSession): ConnectionIO[Map[UUID, Role]] = {
     val gids = s.groups.map(_.id).toArray
     val q =
       if s.isAdmin then sql"select id, 'admin' from project"
@@ -101,24 +74,9 @@ final class ProjectStore(
         sql"""select project_id, role from project_member where user_id = ${s.user.id}
               union all select project_id, role from project_group_member where group_id = any($gids)"""
     q.query[(UUID, String)].to[List].map { rows =>
-      rows.groupMapReduce(_._1)(r => Role.parse(r._2).getOrElse(Role.Requester))(
-        (
-          a,
-          b
-        ) => if a >= b then a else b
-      )
-        .filter(
-          (
-            id,
-            _
-          ) => s.allowsProject(id)
-        )
-        .map(
-          (
-            id,
-            r
-          ) => id -> Access.limit(s, r)
-        )
+      rows.groupMapReduce(_._1)(r => Role.parse(r._2).getOrElse(Role.Requester))((a, b) => if a >= b then a else b)
+        .filter((id, _) => s.allowsProject(id))
+        .map((id, r) => id -> Access.limit(s, r))
     }
   }
 
@@ -130,10 +88,7 @@ final class ProjectStore(
 
   private type ProjRow = (UUID, String, String, String, Option[UserBrief], Boolean, Instant, Boolean)
 
-  def list(
-    s: AuthSession,
-    includeArchived: Boolean
-  ): IO[List[ProjectDto]] = tx {
+  def list(s: AuthSession, includeArchived: Boolean): IO[List[ProjectDto]] = tx {
     for {
       roles <- visibleC(s)
       rows <-
@@ -144,43 +99,27 @@ final class ProjectStore(
     } yield rows.map(r => ProjectDto(r._1, r._2, r._3, r._4, r._5, r._6, roles(r._1).asString, r._7, r._8))
   }
 
-  def find(
-    id: UUID
-  ): IO[Option[Project]] = tx(findC(id))
+  def find(id: UUID): IO[Option[Project]] = tx(findC(id))
 
-  def findC(
-    id: UUID
-  ): ConnectionIO[Option[Project]] =
+  def findC(id: UUID): ConnectionIO[Option[Project]] =
     sql"select id, key, name, description, lead_id, archived, created_at from project where id = $id".query[
       Project
     ].option
 
-  def findByKey(
-    key: String
-  ): IO[Option[Project]] = tx(
+  def findByKey(key: String): IO[Option[Project]] = tx(
     sql"select id, key, name, description, lead_id, archived, created_at from project where key = ${key.trim.toUpperCase}".query[
       Project
     ].option
   )
 
-  def dto(
-    id: UUID,
-    role: Role
-  ): IO[Option[ProjectDto]] = tx(dtoC(id, role))
+  def dto(id: UUID, role: Role): IO[Option[ProjectDto]] = tx(dtoC(id, role))
 
-  def dtoC(
-    id: UUID,
-    role: Role
-  ): ConnectionIO[Option[ProjectDto]] = (fr"select" ++ projCols ++ fr"where p.id = $id").query[ProjRow].option
-    .map(_.map(r => ProjectDto(r._1, r._2, r._3, r._4, r._5, r._6, role.asString, r._7, r._8)))
+  def dtoC(id: UUID, role: Role): ConnectionIO[Option[ProjectDto]] =
+    (fr"select" ++ projCols ++ fr"where p.id = $id").query[ProjRow].option
+      .map(_.map(r => ProjectDto(r._1, r._2, r._3, r._4, r._5, r._6, role.asString, r._7, r._8)))
 
   /** 作成者を管理者のメンバーにし、既定のステータス（作業前・進行中・待機中・完了）を作る。 */
-  def create(
-    key: String,
-    name: String,
-    description: String,
-    creator: UUID
-  ): IO[Either[AppError, UUID]] = tx {
+  def create(key: String, name: String, description: String, creator: UUID): IO[Either[AppError, UUID]] = tx {
     sql"select exists(select 1 from project where key = $key)".query[Boolean].unique.flatMap { dup =>
       if dup then fail(AppError(ErrorCode.ProjectKeyTaken, s"プロジェクトキー $key は使われています"))
       else {
@@ -203,10 +142,7 @@ final class ProjectStore(
     }
   }
 
-  def update(
-    id: UUID,
-    r: UpdateProjectReq
-  ): IO[Unit] = tx {
+  def update(id: UUID, r: UpdateProjectReq): IO[Unit] = tx {
     val sets = List(
       r.name.map(_.trim).filter(_.nonEmpty).map(v => fr"name = $v"),
       r.description.map(v => fr"description = $v"),
@@ -218,91 +154,47 @@ final class ProjectStore(
   }
 
   /** ヘルプデスクなら、ボードで完了したタスクを出す日数。ヘルプデスクでなければ None。 */
-  def helpdeskDoneDays(
-    id: UUID
-  ): IO[Option[Int]] = tx(
-    sql"select done_hide_days from project where id = $id and helpdesk".query[Int].option
-  )
+  def helpdeskDoneDays(id: UUID): IO[Option[Int]] =
+    tx(sql"select done_hide_days from project where id = $id and helpdesk".query[Int].option)
 
-  def delete(
-    id: UUID
-  ): IO[Unit] = tx(sql"delete from project where id = $id".update.run.void)
+  def delete(id: UUID): IO[Unit] = tx(sql"delete from project where id = $id".update.run.void)
 
-  def reorder(
-    ids: List[UUID]
-  ): IO[Unit] = tx(
-    ids.zipWithIndex.traverse_(
-      (
-        id,
-        i
-      ) => sql"update project set position = ${f"a$i%05d"} where id = $id".update.run
-    )
+  def reorder(ids: List[UUID]): IO[Unit] = tx(
+    ids.zipWithIndex.traverse_((id, i) => sql"update project set position = ${f"a$i%05d"} where id = $id".update.run)
   )
 
   // ---------------------------------------------------------------- メンバー
 
-  def members(
-    projectId: UUID
-  ): IO[List[MemberDto]] = tx(membersC(projectId))
+  def members(projectId: UUID): IO[List[MemberDto]] = tx(membersC(projectId))
 
-  def membersC(
-    projectId: UUID
-  ): ConnectionIO[List[MemberDto]] =
+  def membersC(projectId: UUID): ConnectionIO[List[MemberDto]] =
     sql"""select u.id, u.name, u.avatar_url, m.role from project_member m join app_user u on u.id = m.user_id
           where m.project_id = $projectId and not u.disabled order by u.name"""
-      .query[(UUID, String, Option[String], String)].map(
-        (
-          id,
-          n,
-          a,
-          r
-        ) => MemberDto(UserBrief(id, n, a), r)
-      ).to[List]
+      .query[(UUID, String, Option[String], String)].map((id, n, a, r) => MemberDto(UserBrief(id, n, a), r)).to[List]
 
-  def setMember(
-    projectId: UUID,
-    userId: UUID,
-    role: Role
-  ): IO[Unit] = tx(
+  def setMember(projectId: UUID, userId: UUID, role: Role): IO[Unit] = tx(
     sql"""insert into project_member (project_id, user_id, role) values ($projectId, $userId, ${role.asString})
           on conflict (project_id, user_id) do update set role = excluded.role""".update.run.void
   )
 
-  def removeMember(
-    projectId: UUID,
-    userId: UUID
-  ): IO[Unit] = tx(
-    sql"delete from project_member where project_id = $projectId and user_id = $userId".update.run.void
-  )
+  def removeMember(projectId: UUID, userId: UUID): IO[Unit] =
+    tx(sql"delete from project_member where project_id = $projectId and user_id = $userId".update.run.void)
 
-  def groupRoles(
-    projectId: UUID
-  ): IO[List[GroupRoleDto]] = tx(
+  def groupRoles(projectId: UUID): IO[List[GroupRoleDto]] = tx(
     sql"""select g.id, g.name, m.role from project_group_member m join user_group g on g.id = m.group_id
           where m.project_id = $projectId order by g.name""".query[GroupRoleDto].to[List]
   )
 
-  def setGroupRole(
-    projectId: UUID,
-    groupId: UUID,
-    role: Role
-  ): IO[Unit] = tx(
+  def setGroupRole(projectId: UUID, groupId: UUID, role: Role): IO[Unit] = tx(
     sql"""insert into project_group_member (project_id, group_id, role) values ($projectId, $groupId, ${role.asString})
           on conflict (project_id, group_id) do update set role = excluded.role""".update.run.void
   )
 
-  def removeGroupRole(
-    projectId: UUID,
-    groupId: UUID
-  ): IO[Unit] = tx(
-    sql"delete from project_group_member where project_id = $projectId and group_id = $groupId".update.run.void
-  )
+  def removeGroupRole(projectId: UUID, groupId: UUID): IO[Unit] =
+    tx(sql"delete from project_group_member where project_id = $projectId and group_id = $groupId".update.run.void)
 
   /** プロジェクトでの役割ごとの人（直接のメンバーと、グループで権限を持つ人）。role が "all" なら全員。 */
-  def usersWithRole(
-    projectId: UUID,
-    role: String
-  ): IO[List[UUID]] = {
+  def usersWithRole(projectId: UUID, role: String): IO[List[UUID]] = {
     val roles = role match {
       case "admin" => List("admin")
       case "edit" => List("edit", "admin")
@@ -318,27 +210,17 @@ final class ProjectStore(
   }
 
   /** グループの人のうち、そのプロジェクトを閲覧できる人。 */
-  def groupMembers(
-    projectId: UUID,
-    groupId: UUID,
-    adminGroups: Set[String]
-  ): IO[List[UUID]] =
+  def groupMembers(projectId: UUID, groupId: UUID, adminGroups: Set[String]): IO[List[UUID]] =
     (
       tx(sql"select gm.user_id from group_member gm where gm.group_id = $groupId".query[UUID].to[List]),
       audience(projectId, adminGroups)
     ).mapN {
-      (
-        gs,
-        aud
-      ) =>
+      (gs, aud) =>
         val ids = aud.map(_.id).toSet; gs.filter(ids)
     }
 
   /** メンションの候補にするグループ（そのプロジェクトを閲覧できる人がいるもの）と役割。 */
-  def mentionGroups(
-    projectId: UUID,
-    adminGroups: Set[String]
-  ): IO[List[MentionGroupDto]] =
+  def mentionGroups(projectId: UUID, adminGroups: Set[String]): IO[List[MentionGroupDto]] =
     for {
       aud <- audience(projectId, adminGroups).map(_.map(_.id).toSet)
       gs <- tx(sql"select g.id, g.name, gm.user_id from user_group g join group_member gm on gm.group_id = g.id".query[(
@@ -354,20 +236,14 @@ final class ProjectStore(
         MentionGroupDto("r:edit", "編集者", edt.size),
         MentionGroupDto("r:all", "全員", aud.size)
       ).filter(_.count > 0)
-      roles ++ gs.groupBy(g => (g._1, g._2)).toList.map(
-        (
-          k,
-          ms
-        ) => MentionGroupDto(s"g:${k._1}", k._2, ms.count(m => aud(m._3)))
+      roles ++ gs.groupBy(g => (g._1, g._2)).toList.map((k, ms) =>
+        MentionGroupDto(s"g:${k._1}", k._2, ms.count(m => aud(m._3)))
       )
         .filter(_.count > 0).sortBy(_.name)
     }
 
   /** プロジェクトを閲覧できる有効なユーザー（メンションの候補・通知の宛先の確認）。ヘルプデスクの"ユーザ"は含めない。 */
-  def audience(
-    projectId: UUID,
-    adminGroups: Set[String]
-  ): IO[List[UserBrief]] = tx(
+  def audience(projectId: UUID, adminGroups: Set[String]): IO[List[UserBrief]] = tx(
     sql"""select distinct u.id, u.name, u.avatar_url from app_user u
           where not u.disabled and (
             u.is_admin
@@ -381,21 +257,14 @@ final class ProjectStore(
 
   // ---------------------------------------------------------------- ステータス
 
-  def statuses(
-    projectId: UUID
-  ): IO[List[StatusDto]] = tx(statusesC(projectId))
+  def statuses(projectId: UUID): IO[List[StatusDto]] = tx(statusesC(projectId))
 
-  def statusesC(
-    projectId: UUID
-  ): ConnectionIO[List[StatusDto]] =
+  def statusesC(projectId: UUID): ConnectionIO[List[StatusDto]] =
     sql"select id, name, category, color, position from status where project_id = $projectId order by position, name".query[
       StatusDto
     ].to[List]
 
-  def addStatus(
-    projectId: UUID,
-    r: StatusReq
-  ): IO[Either[AppError, StatusDto]] = tx {
+  def addStatus(projectId: UUID, r: StatusReq): IO[Either[AppError, StatusDto]] = tx {
     sql"select exists(select 1 from status where project_id = $projectId and name = ${r.name})".query[
       Boolean
     ].unique.flatMap { dup =>
@@ -408,27 +277,16 @@ final class ProjectStore(
     }
   }
 
-  def updateStatus(
-    projectId: UUID,
-    id: UUID,
-    r: StatusReq
-  ): IO[Either[AppError, Unit]] = tx(updateUniqueC(
+  def updateStatus(projectId: UUID, id: UUID, r: StatusReq): IO[Either[AppError, Unit]] = tx(updateUniqueC(
     sql"update status set name = ${r.name}, category = ${r.category}, color = ${r.color.getOrElse("#64748b")} where id = $id and project_id = $projectId",
     "ステータス",
     r.name
   ))
 
-  def reorderStatuses(
-    projectId: UUID,
-    ids: List[UUID]
-  ): IO[Unit] = tx(reorderC("status", projectId, ids))
+  def reorderStatuses(projectId: UUID, ids: List[UUID]): IO[Unit] = tx(reorderC("status", projectId, ids))
 
   /** ステータスを削除する。使っているタスクは moveTo に移す。 */
-  def deleteStatus(
-    projectId: UUID,
-    id: UUID,
-    moveTo: UUID
-  ): IO[Either[AppError, Unit]] = tx {
+  def deleteStatus(projectId: UUID, id: UUID, moveTo: UUID): IO[Either[AppError, Unit]] = tx {
     sql"select count(*) from status where project_id = $projectId and id in ($id, $moveTo)".query[Int].unique.flatMap {
       n =>
         if id == moveTo || n != 2 then fail(AppError(ErrorCode.StatusMoveToRequired))
@@ -444,51 +302,27 @@ final class ProjectStore(
 
   // ---------------------------------------------------------------- マイルストーン（ガントの目印）
 
-  def createMilestone(
-    projectId: UUID,
-    name: String,
-    date: LocalDate,
-    color: String
-  ): IO[MilestoneDto] = tx {
+  def createMilestone(projectId: UUID, name: String, date: LocalDate, color: String): IO[MilestoneDto] = tx {
     val id = UUID.randomUUID()
     sql"insert into milestone (id, project_id, name, date, color) values ($id, $projectId, $name, $date, $color)".update.run
       .as(MilestoneDto(id, name, date.toString, color))
   }
 
-  def updateMilestone(
-    projectId: UUID,
-    id: UUID,
-    name: String,
-    date: LocalDate,
-    color: String
-  ): IO[Boolean] = tx(
-    sql"update milestone set name = $name, date = $date, color = $color where id = $id and project_id = $projectId".update.run.map(
+  def updateMilestone(projectId: UUID, id: UUID, name: String, date: LocalDate, color: String): IO[Boolean] =
+    tx(sql"update milestone set name = $name, date = $date, color = $color where id = $id and project_id = $projectId".update.run.map(
       _ > 0
-    )
-  )
+    ))
 
-  def deleteMilestone(
-    projectId: UUID,
-    id: UUID
-  ): IO[Boolean] = tx(
-    sql"delete from milestone where id = $id and project_id = $projectId".update.run.map(_ > 0)
-  )
+  def deleteMilestone(projectId: UUID, id: UUID): IO[Boolean] =
+    tx(sql"delete from milestone where id = $id and project_id = $projectId".update.run.map(_ > 0))
 
-  def labels(
-    projectId: UUID
-  ): IO[List[LabelDto]] = tx(labelsC(projectId))
+  def labels(projectId: UUID): IO[List[LabelDto]] = tx(labelsC(projectId))
 
-  def labelsC(
-    projectId: UUID
-  ): ConnectionIO[List[LabelDto]] =
+  def labelsC(projectId: UUID): ConnectionIO[List[LabelDto]] =
     sql"select id, name, color from label where project_id = $projectId order by name".query[LabelDto].to[List]
 
   /** 名前のラベルを返す（なければ作る）。 */
-  def ensureLabelC(
-    projectId: UUID,
-    name: String,
-    color: Option[String]
-  ): ConnectionIO[LabelDto] =
+  def ensureLabelC(projectId: UUID, name: String, color: Option[String]): ConnectionIO[LabelDto] =
     sql"""insert into label (id, project_id, name, color) values (${UUID.randomUUID()}, $projectId, ${name.trim}, ${color.getOrElse(
         "#64748b"
       )})
@@ -496,56 +330,31 @@ final class ProjectStore(
       LabelDto
     ].unique
 
-  def ensureLabel(
-    projectId: UUID,
-    name: String,
-    color: Option[String]
-  ): IO[LabelDto] = tx(ensureLabelC(projectId, name, color))
+  def ensureLabel(projectId: UUID, name: String, color: Option[String]): IO[LabelDto] =
+    tx(ensureLabelC(projectId, name, color))
 
-  def updateLabel(
-    projectId: UUID,
-    id: UUID,
-    r: LabelReq
-  ): IO[Either[AppError, Unit]] = tx(updateUniqueC(
+  def updateLabel(projectId: UUID, id: UUID, r: LabelReq): IO[Either[AppError, Unit]] = tx(updateUniqueC(
     sql"update label set name = ${r.name.trim}, color = ${r.color.getOrElse("#64748b")} where id = $id and project_id = $projectId",
     "ラベル",
     r.name
   ))
 
-  def deleteLabel(
-    projectId: UUID,
-    id: UUID
-  ): IO[Unit] = tx(sql"delete from label where id = $id and project_id = $projectId".update.run.void)
+  def deleteLabel(projectId: UUID, id: UUID): IO[Unit] =
+    tx(sql"delete from label where id = $id and project_id = $projectId".update.run.void)
 
   // ---------------------------------------------------------------- カスタムフィールド
 
-  def fields(
-    projectId: UUID
-  ): IO[List[CustomFieldDto]] = tx(fieldsC(projectId))
+  def fields(projectId: UUID): IO[List[CustomFieldDto]] = tx(fieldsC(projectId))
 
-  def fieldsC(
-    projectId: UUID
-  ): ConnectionIO[List[CustomFieldDto]] =
+  def fieldsC(projectId: UUID): ConnectionIO[List[CustomFieldDto]] =
     sql"""select id, name, kind, options, required, position, help_form, help_hint from custom_field
           where project_id = $projectId order by position, name"""
       .query[(UUID, String, String, Json, Boolean, Int, Boolean, String)]
-      .map(
-        (
-          id,
-          n,
-          k,
-          o,
-          r,
-          p,
-          hf,
-          hh
-        ) => CustomFieldDto(id, n, k, o.as[List[String]].getOrElse(Nil), r, p, hf, hh)
-      ).to[List]
+      .map((id, n, k, o, r, p, hf, hh) => CustomFieldDto(id, n, k, o.as[List[String]].getOrElse(Nil), r, p, hf, hh)).to[
+        List
+      ]
 
-  def addField(
-    projectId: UUID,
-    r: CustomFieldReq
-  ): IO[Either[AppError, CustomFieldDto]] = tx(
+  def addField(projectId: UUID, r: CustomFieldReq): IO[Either[AppError, CustomFieldDto]] = tx(
     sql"""insert into custom_field (id, project_id, name, kind, options, required, help_form, help_hint, position)
           values (${UUID.randomUUID()}, $projectId, ${r.name.trim}, ${r.kind}, ${r.options.asJson}, ${r.required},
                   ${r.helpForm.getOrElse(false)}, ${r.helpHint.getOrElse("").trim},
@@ -556,11 +365,7 @@ final class ProjectStore(
     }
   )
 
-  def updateField(
-    projectId: UUID,
-    id: UUID,
-    r: CustomFieldReq
-  ): IO[Either[AppError, Unit]] = tx(updateUniqueC(
+  def updateField(projectId: UUID, id: UUID, r: CustomFieldReq): IO[Either[AppError, Unit]] = tx(updateUniqueC(
     sql"""update custom_field set name = ${r.name.trim}, kind = ${r.kind}, options = ${r.options.asJson}, required = ${r.required},
           help_form = coalesce(${r.helpForm}, help_form), help_hint = coalesce(${r.helpHint.map(_.trim)}, help_hint)
           where id = $id and project_id = $projectId""",
@@ -568,74 +373,44 @@ final class ProjectStore(
     r.name
   ))
 
-  def reorderFields(
-    projectId: UUID,
-    ids: List[UUID]
-  ): IO[Unit] = tx(reorderC("custom_field", projectId, ids))
+  def reorderFields(projectId: UUID, ids: List[UUID]): IO[Unit] = tx(reorderC("custom_field", projectId, ids))
 
-  def deleteField(
-    projectId: UUID,
-    id: UUID
-  ): IO[Unit] = tx(sql"delete from custom_field where id = $id and project_id = $projectId".update.run.void)
+  def deleteField(projectId: UUID, id: UUID): IO[Unit] =
+    tx(sql"delete from custom_field where id = $id and project_id = $projectId".update.run.void)
 
   // ---------------------------------------------------------------- スプリント
 
   private val sprintCols =
     fr"id, project_id, name, goal, state, start_date::text, end_date::text, position, completed_at from sprint"
 
-  def sprints(
-    projectId: UUID,
-    includeClosed: Boolean
-  ): IO[List[SprintDto]] = tx(sprintsC(projectId, includeClosed))
+  def sprints(projectId: UUID, includeClosed: Boolean): IO[List[SprintDto]] = tx(sprintsC(projectId, includeClosed))
 
-  def sprintsC(
-    projectId: UUID,
-    includeClosed: Boolean
-  ): ConnectionIO[List[SprintDto]] =
+  def sprintsC(projectId: UUID, includeClosed: Boolean): ConnectionIO[List[SprintDto]] =
     (fr"select" ++ sprintCols ++ fr"where project_id = $projectId" ++
       (if includeClosed then Fragment.empty else fr"and state <> 'closed'") ++
       fr"order by case state when 'active' then 0 when 'planned' then 1 else 2 end, position, coalesce(completed_at, created_at) desc")
       .query[SprintDto].to[List]
 
-  def sprint(
-    id: UUID
-  ): IO[Option[SprintDto]] = tx(sprintC(id))
+  def sprint(id: UUID): IO[Option[SprintDto]] = tx(sprintC(id))
 
-  def sprintC(
-    id: UUID
-  ): ConnectionIO[Option[SprintDto]] = (fr"select" ++ sprintCols ++ fr"where id = $id").query[SprintDto].option
+  def sprintC(id: UUID)
+    : ConnectionIO[Option[SprintDto]] = (fr"select" ++ sprintCols ++ fr"where id = $id").query[SprintDto].option
 
-  def activeSprintC(
-    projectId: UUID
-  ): ConnectionIO[Option[SprintDto]] =
+  def activeSprintC(projectId: UUID): ConnectionIO[Option[SprintDto]] =
     (fr"select" ++ sprintCols ++ fr"where project_id = $projectId and state = 'active'").query[SprintDto].option
 
-  def createSprint(
-    projectId: UUID,
-    r: SprintReq,
-    start: Option[LocalDate],
-    end: Option[LocalDate]
-  ): IO[SprintDto] = tx(
+  def createSprint(projectId: UUID, r: SprintReq, start: Option[LocalDate], end: Option[LocalDate]): IO[SprintDto] = tx(
     sql"""insert into sprint (id, project_id, name, goal, start_date, end_date, position)
           values (${UUID.randomUUID()}, $projectId, ${r.name.trim}, ${r.goal.getOrElse("")}, $start, $end,
                   coalesce((select max(position) + 1 from sprint where project_id = $projectId), 0))
           returning id""".query[UUID].unique.flatMap(id => sprintC(id).map(_.get))
   )
 
-  def updateSprint(
-    id: UUID,
-    r: SprintReq,
-    start: Option[LocalDate],
-    end: Option[LocalDate]
-  ): IO[Unit] = tx(
+  def updateSprint(id: UUID, r: SprintReq, start: Option[LocalDate], end: Option[LocalDate]): IO[Unit] = tx(
     sql"update sprint set name = ${r.name.trim}, goal = ${r.goal.getOrElse("")}, start_date = $start, end_date = $end where id = $id".update.run.void
   )
 
-  def startSprint(
-    projectId: UUID,
-    id: UUID,
-    today: LocalDate
-  ): IO[Either[AppError, SprintDto]] = tx(
+  def startSprint(projectId: UUID, id: UUID, today: LocalDate): IO[Either[AppError, SprintDto]] = tx(
     activeSprintC(projectId).flatMap {
       case Some(a) => fail(AppError(ErrorCode.SprintAlreadyActive, s"スプリント「${a.name}」が進行中です。完了してから開始してください"))
       case None =>
@@ -648,11 +423,7 @@ final class ProjectStore(
   )
 
   /** 完了したスプリントの未完了のタスクを moveTo（None ならバックログ）へ移す。移したタスクの数を返す。 */
-  def completeSprint(
-    projectId: UUID,
-    id: UUID,
-    moveTo: Option[UUID]
-  ): IO[Either[AppError, Int]] = tx(
+  def completeSprint(projectId: UUID, id: UUID, moveTo: Option[UUID]): IO[Either[AppError, Int]] = tx(
     sql"update sprint set state = 'closed', completed_at = now() where id = $id and project_id = $projectId and state = 'active'".update.run.flatMap {
       n =>
         if n == 0 then fail(AppError(ErrorCode.SprintNotActive))
@@ -672,26 +443,16 @@ final class ProjectStore(
     }
   )
 
-  def deleteSprint(
-    projectId: UUID,
-    id: UUID
-  ): IO[Either[AppError, Unit]] = tx(
-    sql"delete from sprint where id = $id and project_id = $projectId and state <> 'active'".update.run.map(n =>
+  def deleteSprint(projectId: UUID, id: UUID): IO[Either[AppError, Unit]] =
+    tx(sql"delete from sprint where id = $id and project_id = $projectId and state <> 'active'".update.run.map(n =>
       if n == 0 then Left(AppError(ErrorCode.SprintActiveNotDeletable)) else Right(())
-    )
-  )
+    ))
 
-  def reorderSprints(
-    projectId: UUID,
-    ids: List[UUID]
-  ): IO[Unit] = tx(reorderC("sprint", projectId, ids))
+  def reorderSprints(projectId: UUID, ids: List[UUID]): IO[Unit] = tx(reorderC("sprint", projectId, ids))
 
   // ---------------------------------------------------------------- まとめて取得
 
-  def meta(
-    projectId: UUID,
-    role: Role
-  ): IO[Option[ProjectMetaDto]] = tx(
+  def meta(projectId: UUID, role: Role): IO[Option[ProjectMetaDto]] = tx(
     dtoC(projectId, role).flatMap(_.traverse { p =>
       for {
         st <- statusesC(projectId)

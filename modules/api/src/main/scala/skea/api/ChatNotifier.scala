@@ -23,22 +23,15 @@ import scala.concurrent.duration.*
  * 通知をチャット（stui）にも送る（docs/stui-integration.md）。連携したユーザーに、stui のボット「skea」からの DM として届く。
  * 通知の種類ごとに個人設定で止められる。トークンが失効していたら（401）連携を外す。
  */
-final class ChatNotifier(
-  tokens: IntegrationTokenStore,
-  users: UserStore,
-  http: Client[IO],
-  box: SecretBox,
-  cfg: ApiConfig) {
+final class ChatNotifier(tokens: IntegrationTokenStore,
+                         users: UserStore,
+                         http: Client[IO],
+                         box: SecretBox,
+                         cfg: ApiConfig) {
 
   private val Provider = "stui"
 
-  def send(
-    userId: UUID,
-    kind: String,
-    title: String,
-    text: String,
-    link: String
-  ): IO[Unit] =
+  def send(userId: UUID, kind: String, title: String, text: String, link: String): IO[Unit] =
     cfg.linkServices.find(_.provider == Provider).traverse_ { c =>
       tokens.token(userId, Provider).map(_.flatMap(box.decrypt)).flatMap(_.traverse_ { token =>
         users.chatWanted(userId, kind).flatMap(IO.whenA(_) {

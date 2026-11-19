@@ -21,9 +21,7 @@ class StuiChannelSpec extends ApiDbSuite {
   private val box = SecretBox("test-secret-0123456789")
 
   /** 偽の stui: チャンネルの一覧と、通知の受け取り（notifyStatus を返す）。 */
-  private final class FakeStui(
-    notifyStatus: Ref[IO, Status],
-    got: Ref[IO, List[Json]]) {
+  private final class FakeStui(notifyStatus: Ref[IO, Status], got: Ref[IO, List[Json]]) {
     val client: Client[IO] = Client.fromHttpApp(HttpRoutes.of[IO] {
       case GET -> Root / "api" / "channels" =>
         Ok(Json.arr(
@@ -119,12 +117,7 @@ class StuiChannelSpec extends ApiDbSuite {
         env.access,
         cfg
       ).routes
-      call = (
-        t: String,
-        m: Method,
-        path: String,
-        b: Option[Json]
-      ) => {
+      call = (t: String, m: Method, path: String, b: Option[Json]) => {
         val base =
           Request[IO](m, Uri.unsafeFromString(path)).addCookie("skea_session", t).putHeaders("Origin" -> publicUrl)
         routes.orNotFound.run(b.fold(base)(base.withEntity(_))).flatMap(r =>
@@ -214,12 +207,7 @@ class StuiChannelSpec extends ApiDbSuite {
         env.access,
         cfg
       ).routes
-      call = (
-        t: String,
-        m: Method,
-        path: String,
-        b: Option[Json]
-      ) => {
+      call = (t: String, m: Method, path: String, b: Option[Json]) => {
         val base =
           Request[IO](m, Uri.unsafeFromString(path)).addCookie("skea_session", t).putHeaders("Origin" -> publicUrl)
         routes.orNotFound.run(b.fold(base)(base.withEntity(_))).flatMap(r =>

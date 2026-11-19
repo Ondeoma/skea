@@ -7,9 +7,7 @@ import io.circe.Json
 /** HTML のエスケープ. */
 object Html {
 
-  def escape(
-    s: String
-  ): String = {
+  def escape(s: String): String = {
     val b = new StringBuilder(s.length + 16)
     s.foreach {
       case '<' => b.append("&lt;")
@@ -22,9 +20,7 @@ object Html {
     b.toString
   }
 
-  def unescape(
-    s: String
-  ): String =
+  def unescape(s: String): String =
     s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").replace("&amp;", "&")
 
 }
@@ -32,24 +28,18 @@ object Html {
 /** 分単位の時間の表示（90 → "1h 30m"）と入力（"1h 30m"・"1.5h"・"90m"・"90"・"2時間"）. */
 object Minutes {
 
-  def format(
-    m: Int
-  ): String = {
+  def format(m: Int): String = {
     val h = m / 60
     val r = m % 60
     if (h > 0 && r > 0) s"${h}h ${r}m" else if (h > 0) s"${h}h" else s"${r}m"
   }
 
   /** 時間（1.5 など. 割り切れれば整数）. */
-  def hours(
-    m: Int
-  ): String = if (m % 60 == 0) (m / 60).toString else f"${m / 60.0}%.1f"
+  def hours(m: Int): String = if (m % 60 == 0) (m / 60).toString else f"${m / 60.0}%.1f"
 
   private val HM = """^(?:(\d+(?:\.\d+)?)h)?(?:(\d+)m)?$""".r
 
-  def parse(
-    s: String
-  ): Option[Int] = {
+  def parse(s: String): Option[Int] = {
     val t = s.trim.toLowerCase.replace("時間", "h").replace("分", "m").replace(" ", "")
     if (t.isEmpty) None
     else t.toIntOption.orElse(t match {
@@ -65,23 +55,14 @@ object Minutes {
 /** 変更履歴（task_event）の文言. 画面の通知・活動・履歴で使う. */
 object EventText {
 
-  private def str(
-    d: Json,
-    k: String
-  ): String = d.hcursor.get[String](k).getOrElse("")
+  private def str(d: Json, k: String): String = d.hcursor.get[String](k).getOrElse("")
 
   /** 変更したフィールド（task.updated の detail.changes）. */
-  def changedFields(
-    detail: Json
-  ): List[String] =
+  def changedFields(detail: Json): List[String] =
     detail.hcursor.downField("changes").as[List[Json]].getOrElse(Nil).flatMap(_.hcursor.get[String]("field").toOption)
 
   /** 「SKEA-1 を作成しました」のような述部（操作した人の名前は呼び出し側で前に付ける）. taskKey がなければ「このタスク」. */
-  def describe(
-    kind: String,
-    detail: Json,
-    taskKey: Option[String]
-  ): String = {
+  def describe(kind: String, detail: Json, taskKey: Option[String]): String = {
     // タスクID の後ろだけ空白を入れる（「SKEA-1 を作成」「このタスクを作成」）
     val key = taskKey.getOrElse("このタスク")
     val subj = taskKey.fold("このタスク")(_ + " ")

@@ -25,11 +25,7 @@ class StoreSpec extends CatsEffectSuite {
 
   override def munitFixtures = if cfg.isDefined then List(xaFixture) else Nil
 
-  private def withDb(
-    name: String
-  )(
-    body: (UserStore, ProjectStore, TaskStore, SearchStore) => IO[Unit]
-  ): Unit =
+  private def withDb(name: String)(body: (UserStore, ProjectStore, TaskStore, SearchStore) => IO[Unit]): Unit =
     test(name) {
       if cfg.isEmpty then IO(assume(false, "TEST_DATABASE_URL が未設定"))
       else {
@@ -40,10 +36,7 @@ class StoreSpec extends CatsEffectSuite {
     }
 
   /** 毎回違うキーのプロジェクトを作る。 */
-  private def project(
-    users: UserStore,
-    projects: ProjectStore
-  ): IO[(User, UUID)] =
+  private def project(users: UserStore, projects: ProjectStore): IO[(User, UUID)] =
     for {
       u <- users.upsert(s"test:${UUID.randomUUID()}", "テスト 太郎", None, None)
       key = "T" + UUID.randomUUID().toString.filter(_.isLetterOrDigit).toUpperCase.take(8)
@@ -51,12 +44,7 @@ class StoreSpec extends CatsEffectSuite {
     } yield (u, pid)
 
   withDb("タスクの作成（採番・既定のステータス）と更新・楽観ロック") {
-    (
-      users,
-      projects,
-      tasks,
-      _
-    ) =>
+    (users, projects, tasks, _) =>
       for {
         up <- project(users, projects)
         (u, pid) = up
@@ -84,12 +72,7 @@ class StoreSpec extends CatsEffectSuite {
   }
 
   withDb("親子の循環と依存関係の循環を拒否する") {
-    (
-      users,
-      projects,
-      tasks,
-      _
-    ) =>
+    (users, projects, tasks, _) =>
       for {
         up <- project(users, projects)
         (u, pid) = up
@@ -106,12 +89,7 @@ class StoreSpec extends CatsEffectSuite {
   }
 
   withDb("並び順の移動（前後の間に入る）") {
-    (
-      users,
-      projects,
-      tasks,
-      _
-    ) =>
+    (users, projects, tasks, _) =>
       for {
         up <- project(users, projects)
         (u, pid) = up
@@ -125,12 +103,7 @@ class StoreSpec extends CatsEffectSuite {
   }
 
   withDb("日本語の検索（かなの揺れ・入力ミス・絞り込み）") {
-    (
-      users,
-      projects,
-      tasks,
-      search
-    ) =>
+    (users, projects, tasks, search) =>
       for {
         up <- project(users, projects)
         (u, pid) = up
@@ -149,27 +122,13 @@ class StoreSpec extends CatsEffectSuite {
       } yield ()
   }
 
-  extension [A](
-    as: List[A]
-  ) {
-    private def traverseIO[B](
-      f: A => IO[B]
-    ): IO[List[B]] =
-      as.foldLeft(IO.pure(List.empty[B]))(
-        (
-          acc,
-          a
-        ) => acc.flatMap(l => f(a).map(l :+ _))
-      )
+  extension [A](as: List[A]) {
+    private def traverseIO[B](f: A => IO[B]): IO[List[B]] =
+      as.foldLeft(IO.pure(List.empty[B]))((acc, a) => acc.flatMap(l => f(a).map(l :+ _)))
   }
 
   withDb("コメントの下書き（ユーザー＋タスクごと）・マイルストーン・アイコン") {
-    (
-      users,
-      projects,
-      tasks,
-      _
-    ) =>
+    (users, projects, tasks, _) =>
       for {
         up <- project(users, projects)
         (u, pid) = up
@@ -201,12 +160,7 @@ class StoreSpec extends CatsEffectSuite {
   }
 
   withDb("コメントのリアクションと、テンプレート") {
-    (
-      users,
-      projects,
-      tasks,
-      _
-    ) =>
+    (users, projects, tasks, _) =>
       for {
         up <- project(users, projects)
         (u, pid) = up
@@ -277,12 +231,7 @@ class StoreSpec extends CatsEffectSuite {
   }
 
   withDb("OAuth: 認可コードは一度だけ・期限内だけ使え、許可し直すと前のキーを失効させる") {
-    (
-      users,
-      projects,
-      _,
-      _
-    ) =>
+    (users, projects, _, _) =>
       for {
         up <- project(users, projects)
         (u, _) = up
@@ -312,18 +261,10 @@ class StoreSpec extends CatsEffectSuite {
   }
 
   withDb("ヘルプデスク: グループの階層と共有、\"ユーザ\"に見えるタスク、内部コメント") {
-    (
-      users,
-      projects,
-      tasks,
-      _
-    ) =>
+    (users, projects, tasks, _) =>
       {
         val help = new HelpStore(xaFixture())
-        def requester(
-          name: String,
-          pid: UUID
-        ) =
+        def requester(name: String, pid: UUID) =
           users.upsert(s"test:${UUID.randomUUID()}", name, None, None).flatTap(u =>
             projects.setMember(pid, u.id, Role.Requester)
           )

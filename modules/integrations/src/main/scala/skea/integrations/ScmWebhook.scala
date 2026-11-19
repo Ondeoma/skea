@@ -10,22 +10,14 @@ import java.time.{Instant, OffsetDateTime}
 /** 受信した Webhook の解析と署名の検証。 */
 object ScmWebhook {
 
-  private def header(
-    h: Headers,
-    name: String
-  ): Option[String] = h.get(org.typelevel.ci.CIString(name)).map(_.head.value)
+  private def header(h: Headers, name: String): Option[String] =
+    h.get(org.typelevel.ci.CIString(name)).map(_.head.value)
 
   /** 署名を検証する。GitHub / Forgejo / Bitbucket は HMAC-SHA256、GitLab は秘密のトークンそのもの。 */
-  def verify(
-    p: ScmProvider,
-    secret: String,
-    headers: Headers,
-    body: Array[Byte]
-  ): Boolean = {
+  def verify(p: ScmProvider, secret: String, headers: Headers, body: Array[Byte]): Boolean = {
     val expected = Crypto.hmacHex(secret, body)
-    def sig(
-      names: String*
-    ): Option[String] = names.toList.flatMap(header(headers, _)).headOption.map(_.trim.stripPrefix("sha256="))
+    def sig(names: String*): Option[String] =
+      names.toList.flatMap(header(headers, _)).headOption.map(_.trim.stripPrefix("sha256="))
     p match {
       case ScmProvider.GitLab => header(headers, "X-Gitlab-Token").exists(Crypto.constantTimeEquals(_, secret))
       case ScmProvider.GitHub => sig("X-Hub-Signature-256").exists(Crypto.constantTimeEquals(_, expected))
@@ -40,10 +32,7 @@ object ScmWebhook {
   }
 
   /** push イベントか（それ以外は無視する。ping などは true を返さない）。 */
-  def isPush(
-    p: ScmProvider,
-    headers: Headers
-  ): Boolean = p match {
+  def isPush(p: ScmProvider, headers: Headers): Boolean = p match {
     case ScmProvider.GitHub => header(headers, "X-GitHub-Event").contains("push")
     case ScmProvider.GitLab => header(headers, "X-Gitlab-Event").exists(e => e == "Push Hook" || e == "Tag Push Hook")
     case ScmProvider.Forgejo =>
@@ -51,20 +40,14 @@ object ScmWebhook {
     case ScmProvider.Bitbucket => header(headers, "X-Event-Key").contains("repo:push")
   }
 
-  private def time(
-    s: String
-  ): Instant =
+  private def time(s: String): Instant =
     scala.util.Try(OffsetDateTime.parse(s).toInstant).orElse(scala.util.Try(Instant.parse(s))).getOrElse(Instant.now())
 
-  private def branchOf(
-    ref: Option[String]
-  ): Option[String] = ref.map(_.stripPrefix("refs/heads/")).filterNot(_.startsWith("refs/tags/"))
+  private def branchOf(ref: Option[String]): Option[String] =
+    ref.map(_.stripPrefix("refs/heads/")).filterNot(_.startsWith("refs/tags/"))
 
   /** push の本文のリポジトリ名（owner/repo）。 */
-  def repoName(
-    p: ScmProvider,
-    j: Json
-  ): Option[String] = {
+  def repoName(p: ScmProvider, j: Json): Option[String] = {
     val c = j.hcursor
     (p match {
       case ScmProvider.GitLab => c.downField("project").get[String]("path_with_namespace")
@@ -73,10 +56,7 @@ object ScmWebhook {
   }
 
   /** push の本文からコミットを取り出す。 */
-  def commits(
-    p: ScmProvider,
-    body: String
-  ): Either[String, List[ScmCommit]] =
+  def commits(p: ScmProvider, body: String): Either[String, List[ScmCommit]] =
     parse(body).left.map(_ => "JSON として読めません").map { j =>
       val c = j.hcursor
       val repo = repoName(p, j)

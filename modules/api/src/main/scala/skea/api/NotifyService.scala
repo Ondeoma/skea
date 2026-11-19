@@ -13,40 +13,35 @@ import java.util.UUID
 import scala.concurrent.duration.*
 
 /** 通知（画面内・メール・PWA のプッシュ通知・連携していればチャット（stui））。 */
-final class NotifyService(
-  activity: ActivityStore,
-  projects: ProjectStore,
-  users: UserStore,
-  help: HelpStore,
-  sessions: SessionAuth,
-  cfg: ApiConfig,
-  chat: Option[ChatNotifier] = None,
-  push: Option[sbirds.push.PushService] = None) {
+final class NotifyService(activity: ActivityStore,
+                          projects: ProjectStore,
+                          users: UserStore,
+                          help: HelpStore,
+                          sessions: SessionAuth,
+                          cfg: ApiConfig,
+                          chat: Option[ChatNotifier] = None,
+                          push: Option[sbirds.push.PushService] = None) {
 
   /**
    * users（操作した本人を除く）に通知する。そのプロジェクトを閲覧できない人には送らない。
    * ヘルプデスクの"ユーザ"には、そのタスクが見えるときの決まった種類の通知だけを送り（内部コメント internal は送らない）、リンクは窓口の画面にする。
    */
-  def send(
-    kind: String,
-    to: Set[UUID],
-    actor: Option[UUID],
-    projectId: UUID,
-    taskId: Option[UUID],
-    commentId: Option[UUID],
-    title: String,
-    body: String,
-    link: String,
-    mailDelay: Int = 0,
-    dedupe: Option[String] = None,
-    internal: Boolean = false
-  ): IO[Unit] = {
+  def send(kind: String,
+           to: Set[UUID],
+           actor: Option[UUID],
+           projectId: UUID,
+           taskId: Option[UUID],
+           commentId: Option[UUID],
+           title: String,
+           body: String,
+           link: String,
+           mailDelay: Int = 0,
+           dedupe: Option[String] = None,
+           internal: Boolean = false): IO[Unit] = {
     val targets = (to -- actor.toSet).toList
     IO.whenA(targets.nonEmpty)(sbirds.observe.Telemetry.span("notify.send", "kind" -> kind) {
       actor.flatTraverse(a => users.find(a).map(_.map(_.name))).flatMap { actorName =>
-        def mailBody(
-          link: String
-        ) = List(
+        def mailBody(link: String) = List(
           actorName.fold("")(n => s"$n さんの操作です。\n\n"),
           title,
           "",
@@ -57,10 +52,7 @@ final class NotifyService(
           "-- ",
           "skea（通知の設定は画面右上のメニュー →「個人設定」で変えられます）"
         ).mkString("\n")
-        def deliver(
-          uid: UUID,
-          link: String
-        ): IO[Unit] =
+        def deliver(uid: UUID, link: String): IO[Unit] =
           activity.notify(uid, kind, Some(projectId), taskId, commentId, actor, title, body) *>
             activity.enqueueMail(
               Some(uid),
@@ -101,9 +93,7 @@ final class NotifyService(
   }
 
   /** メールの送信ワーカー（30秒ごと）。送信時点でまだ閲覧できるかを確かめる。 */
-  def mailLoop(
-    mailer: Option[Mailer]
-  ): IO[Nothing] =
+  def mailLoop(mailer: Option[Mailer]): IO[Nothing] =
     Periodic.run(20.seconds, 30.seconds, ErrorCode.MailWorkerFailed) {
       mailer match {
         case None => activity.processMail(50)(_ => IO.pure(OutboxResult.Skip("SMTP が設定されていません")))
@@ -145,7 +135,6 @@ object NotifyService {
     Set(NotificationKind.Comment, NotificationKind.Status, NotificationKind.Mention, NotificationKind.Shared)
 
   /** エージェントの画面のリンク（/tasks/KEY…）を、"ユーザ"の窓口の画面（/help/t/KEY…）にする。 */
-  def helpLink(
-    link: String
-  ): String = if link.startsWith("/tasks/") then "/help/t/" + link.stripPrefix("/tasks/") else link
+  def helpLink(link: String): String =
+    if link.startsWith("/tasks/") then "/help/t/" + link.stripPrefix("/tasks/") else link
 }

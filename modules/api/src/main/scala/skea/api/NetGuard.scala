@@ -20,9 +20,7 @@ object NetGuard {
   private val allowPrivate: Boolean = sys.env.get("OUTBOUND_ALLOW_PRIVATE").exists(_.trim.equalsIgnoreCase("true"))
 
   /** 内部向けのアドレスか（private は RFC1918・ULA・CGNAT）。 */
-  private def kind(
-    a: InetAddress
-  ): Option[String] = {
+  private def kind(a: InetAddress): Option[String] = {
     val b = a.getAddress.map(_ & 0xff)
     if a.isLoopbackAddress || a.isAnyLocalAddress || a.isLinkLocalAddress || a.isMulticastAddress then Some("local")
     else if a.isSiteLocalAddress then Some("private")
@@ -38,9 +36,7 @@ object NetGuard {
   }
 
   /** 送ってよい URL か（http・https で、宛先が内部のアドレスでない）。 */
-  def check(
-    uri: Uri
-  ): IO[Either[String, Unit]] =
+  def check(uri: Uri): IO[Either[String, Unit]] =
     (
       uri.scheme.map(_.value.toString.toLowerCase),
       uri.host.map(_.value.stripPrefix("[").stripSuffix("]").toLowerCase)
@@ -60,8 +56,6 @@ object NetGuard {
       case _ => IO.pure(Left("URL は http:// か https:// で始まるものにしてください"))
     }
 
-  def check(
-    url: String
-  ): IO[Either[String, Unit]] =
+  def check(url: String): IO[Either[String, Unit]] =
     Uri.fromString(url.trim).fold(_ => IO.pure(Left("URL が正しくありません")), check)
 }

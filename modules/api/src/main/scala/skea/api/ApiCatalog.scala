@@ -3,10 +3,7 @@ package skea.api
 /** REST API の一覧（MCP の list_api_endpoints と GET /api/endpoints）。 */
 object ApiCatalog {
 
-  final case class Endpoint(
-    method: String,
-    path: String,
-    description: String)
+  final case class Endpoint(method: String, path: String, description: String)
   val all: List[Endpoint] = List(
     Endpoint("GET", "/api/me", "自分の情報"),
     Endpoint("PATCH", "/api/me", "自分の名前・タイムゾーンを変える {name?, timezone?}"),

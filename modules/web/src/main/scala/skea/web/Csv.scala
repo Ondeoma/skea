@@ -3,9 +3,7 @@ package skea.web
 /** CSV の読み書き（RFC 4180. "..." の中の改行・"" に対応. 先頭の BOM は捨てる）. */
 object Csv {
 
-  def parse(
-    text: String
-  ): List[List[String]] = {
+  def parse(text: String): List[List[String]] = {
     val s = text.stripPrefix("﻿")
     val rows = List.newBuilder[List[String]]
     var row = List.newBuilder[String]
@@ -37,13 +35,9 @@ object Csv {
     rows.result()
   }
 
-  def quote(
-    v: String
-  ): String = "\"" + v.replace("\"", "\"\"") + "\""
+  def quote(v: String): String = "\"" + v.replace("\"", "\"\"") + "\""
 
   /** 書き出す値（= + - @ などで始まる値は、表計算ソフトで数式として動かないよう先頭に ' を付ける）. */
-  def cell(
-    v: String
-  ): String = quote(if (v.nonEmpty && "=+-@\t\r".contains(v.charAt(0))) "'" + v else v)
+  def cell(v: String): String = quote(if (v.nonEmpty && "=+-@\t\r".contains(v.charAt(0))) "'" + v else v)
 
 }

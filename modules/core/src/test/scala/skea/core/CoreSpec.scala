@@ -133,9 +133,7 @@ class CoreSpec extends munit.FunSuite {
       parse("""{"task":{"key":"SKEA-1","status":{"name":"完了","category":"done"},"labels":["バグ","UI"],"spentMinutes":30,
       "assignee":null,"dueDate":"2026-11-20"},"event":{"changes":["statusId"]}}""").toOption.get
     val today = LocalDate.of(2026, 11, 15)
-    def c(
-      s: String
-    ) = Automation.parseCondition(parse(s).toOption.get).toOption.get
+    def c(s: String) = Automation.parseCondition(parse(s).toOption.get).toOption.get
     assert(Automation.eval(c("""{"field":"task.status.category","op":"eq","value":"done"}"""), ctx, today))
     assert(Automation.eval(c("""{"field":"task.labels","op":"contains","value":"バグ"}"""), ctx, today))
     assert(Automation.eval(c("""{"field":"task.assignee","op":"empty"}"""), ctx, today))

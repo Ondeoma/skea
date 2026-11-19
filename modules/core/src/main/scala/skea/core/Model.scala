@@ -3,9 +3,7 @@ package skea.core
 import java.util.UUID
 
 /** UUID として読めれば Some（読めなければ None）。 */
-def uuidOpt(
-  s: String
-): Option[UUID] = scala.util.Try(UUID.fromString(s.trim)).toOption
+def uuidOpt(s: String): Option[UUID] = scala.util.Try(UUID.fromString(s.trim)).toOption
 
 /**
  * プロジェクトに対する権限。問い合わせ(Requester) < 閲覧(View) < 編集(Edit) < 管理(Admin)。
@@ -19,9 +17,7 @@ enum Role {
 object Role {
   given Ordering[Role] = Ordering.by(_.ordinal)
 
-  def parse(
-    s: String
-  ): Option[Role] = s.trim.toLowerCase match {
+  def parse(s: String): Option[Role] = s.trim.toLowerCase match {
     case "requester" => Some(Requester)
     case "view" => Some(View)
     case "edit" => Some(Edit)
@@ -29,21 +25,15 @@ object Role {
     case _ => None
   }
 
-  extension (
-    r: Role
-  ) {
+  extension (r: Role) {
     def asString: String = r match {
       case Requester => "requester"
       case View => "view"
       case Edit => "edit"
       case Admin => "admin"
     }
-    def >=(
-      o: Role
-    ): Boolean = r.ordinal >= o.ordinal
-    def <(
-      o: Role
-    ): Boolean = r.ordinal < o.ordinal
+    def >=(o: Role): Boolean = r.ordinal >= o.ordinal
+    def <(o: Role): Boolean = r.ordinal < o.ordinal
 
     /** エージェント（閲覧以上）か。 */
     def isAgent: Boolean = r >= View
@@ -56,17 +46,13 @@ enum Scope {
 }
 
 object Scope {
-  def parse(
-    s: String
-  ): Option[Scope] = s.trim.toLowerCase match {
+  def parse(s: String): Option[Scope] = s.trim.toLowerCase match {
     case "read" => Some(Read)
     case "write" => Some(Write)
     case "admin" => Some(Admin)
     case _ => None
   }
-  extension (
-    s: Scope
-  ) {
+  extension (s: Scope) {
     def asString: String = s match {
       case Read => "read"
       case Write => "write"
@@ -75,18 +61,15 @@ object Scope {
   }
 }
 
-final case class User(
-  id: UUID,
-  sub: String,
-  name: String,
-  email: Option[String],
-  avatarUrl: Option[String],
-  isAdmin: Boolean,
-  disabled: Boolean,
-  timezone: String)
-final case class Group(
-  id: UUID,
-  name: String)
+final case class User(id: UUID,
+                      sub: String,
+                      name: String,
+                      email: Option[String],
+                      avatarUrl: Option[String],
+                      isAdmin: Boolean,
+                      disabled: Boolean,
+                      timezone: String)
+final case class Group(id: UUID, name: String)
 
 /**
  * エージェント専用アカウント（外部の AI エージェントのサービス skakapo などが API キーで使う、ログインしないアカウント）。
@@ -94,15 +77,11 @@ final case class Group(
  */
 object AgentAccounts {
   val Prefix = "agent:"
-  def isAgent(
-    sub: String
-  ): Boolean = sub.startsWith(Prefix)
+  def isAgent(sub: String): Boolean = sub.startsWith(Prefix)
   def newSub(): String = Prefix + UUID.randomUUID()
 
   /** 表示名の確認（前後の空白を除いて 1〜60 文字、制御文字なし）。 */
-  def validName(
-    s: String
-  ): Either[String, String] = {
+  def validName(s: String): Either[String, String] = {
     val n = s.trim
     if n.isEmpty then Left("名前を入力してください")
     else if n.length > 60 then Left("名前は 60 文字以内にしてください")
@@ -128,11 +107,7 @@ enum AuthVia {
 }
 
 /** 認証済みの利用者。isAdmin はシステム管理者（ADMIN_GROUPS の所属、または画面で管理者にしたユーザー）。 */
-final case class AuthSession(
-  user: User,
-  groups: List[Group],
-  isAdmin: Boolean,
-  via: AuthVia = AuthVia.Session) {
+final case class AuthSession(user: User, groups: List[Group], isAdmin: Boolean, via: AuthVia = AuthVia.Session) {
 
   /** 更新系の操作ができるか（read スコープだけのキーは不可）。 */
   def canWrite: Boolean = via match {
@@ -149,9 +124,7 @@ final case class AuthSession(
     })
 
   /** キーでこのプロジェクトを操作できるか。 */
-  def allowsProject(
-    id: UUID
-  ): Boolean = via match {
+  def allowsProject(id: UUID): Boolean = via match {
     case AuthVia.ApiKey(_, _, Some(ps), _) => ps.contains(id)
     case _ => true
   }
@@ -173,34 +146,24 @@ final case class AuthSession(
 
 /** プロジェクトでの実効権限。システム管理者は管理、それ以外は本人とグループの権限の最大。 */
 object Access {
-  def effective(
-    isAdmin: Boolean,
-    userRole: Option[Role],
-    groupRoles: List[Role]
-  ): Option[Role] =
+  def effective(isAdmin: Boolean, userRole: Option[Role], groupRoles: List[Role]): Option[Role] =
     if isAdmin then Some(Role.Admin)
     else (userRole.toList ++ groupRoles).maxOption
 
   /** APIキーのスコープで権限を絞る（read だけのキーは閲覧に落とす。問い合わせの権限は上げない）。 */
-  def limit(
-    s: AuthSession,
-    r: Role
-  ): Role =
+  def limit(s: AuthSession, r: Role): Role =
     if s.canWrite || r < Role.View then r else Role.View
 }
 
-final case class Project(
-  id: UUID,
-  key: String,
-  name: String,
-  description: String,
-  leadId: Option[UUID],
-  archived: Boolean,
-  createdAt: java.time.Instant)
+final case class Project(id: UUID,
+                         key: String,
+                         name: String,
+                         description: String,
+                         leadId: Option[UUID],
+                         archived: Boolean,
+                         createdAt: java.time.Instant)
 
 object ProjectKey {
   private val Re = "^[A-Z][A-Z0-9]{1,9}$".r
-  def valid(
-    k: String
-  ): Boolean = Re.matches(k)
+  def valid(k: String): Boolean = Re.matches(k)
 }

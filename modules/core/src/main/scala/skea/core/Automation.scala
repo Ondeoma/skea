@@ -42,9 +42,7 @@ object Automation {
   object Trigger {
 
     /** イベント名（task_event.kind）と対応するトリガーの種類。 */
-    def eventType(
-      kind: String
-    ): Option[String] = kind match {
+    def eventType(kind: String): Option[String] = kind match {
       case "task.created" => Some("task_created")
       case "task.updated" => Some("task_updated")
       case "task.status_changed" => Some("status_changed")
@@ -57,9 +55,7 @@ object Automation {
     }
   }
 
-  def typeOf(
-    t: Trigger
-  ): String = t match {
+  def typeOf(t: Trigger): String = t match {
     case Trigger.TaskCreated => "task_created"
     case _: Trigger.TaskUpdated => "task_updated"
     case _: Trigger.StatusChanged => "status_changed"
@@ -73,17 +69,12 @@ object Automation {
     case _: Trigger.IncomingWebhook => "incoming_webhook"
   }
 
-  private def strs(
-    c: ACursor,
-    k: String
-  ): List[String] =
+  private def strs(c: ACursor, k: String): List[String] =
     c.downField(
       k
     ).as[List[String]].orElse(c.downField(k).as[String].map(List(_))).getOrElse(Nil).map(_.trim).filter(_.nonEmpty)
 
-  def parseTrigger(
-    j: Json
-  ): Either[String, (Trigger, Option[Condition])] = {
+  def parseTrigger(j: Json): Either[String, (Trigger, Option[Condition])] = {
     val c = j.hcursor
     val cond = c.downField("condition").focus.filterNot(_.isNull) match {
       case Some(cj) => parseCondition(cj).map(Some(_))
@@ -146,18 +137,11 @@ object Automation {
     "changed"
   )
 
-  def parseCondition(
-    j: Json
-  ): Either[String, Condition] = {
+  def parseCondition(j: Json): Either[String, Condition] = {
     val c = j.hcursor
-    def list(
-      k: String
-    ) = c.downField(k).as[List[Json]].left.map(_ => s"$k は配列で指定してください")
-      .flatMap(_.foldRight[Either[String, List[Condition]]](Right(Nil))(
-        (
-          x,
-          acc
-        ) => acc.flatMap(l => parseCondition(x).map(_ :: l))
+    def list(k: String) = c.downField(k).as[List[Json]].left.map(_ => s"$k は配列で指定してください")
+      .flatMap(_.foldRight[Either[String, List[Condition]]](Right(Nil))((x, acc) =>
+        acc.flatMap(l => parseCondition(x).map(_ :: l))
       ))
     if c.downField("all").succeeded then list("all").map(Condition.All(_))
     else if c.downField("any").succeeded then list("any").map(Condition.AnyOf(_))
@@ -174,11 +158,7 @@ object Automation {
   }
 
   /** ctx はスマート値の元になる JSON（task / actor / event / vars / webResponse …）。 */
-  def eval(
-    cond: Condition,
-    ctx: Json,
-    today: LocalDate
-  ): Boolean = cond match {
+  def eval(cond: Condition, ctx: Json, today: LocalDate): Boolean = cond match {
     case Condition.All(cs) => cs.forall(eval(_, ctx, today))
     case Condition.AnyOf(cs) => cs.exists(eval(_, ctx, today))
     case Condition.Not(c) => !eval(c, ctx, today)
@@ -188,32 +168,21 @@ object Automation {
       compare(actual, op, expected, ctx, path)
   }
 
-  private def str(
-    j: Json
-  ): String =
+  private def str(j: Json): String =
     j.asString.orElse(
       j.asNumber.map(n => n.toLong.fold(n.toDouble.toString)(_.toString))
     ).orElse(j.asBoolean.map(_.toString))
       .getOrElse(if j.isNull then "" else j.noSpaces)
 
-  private def num(
-    j: Json
-  ): Option[BigDecimal] =
+  private def num(j: Json): Option[BigDecimal] =
     j.asNumber.flatMap(_.toBigDecimal).orElse(j.asString.flatMap(s => scala.util.Try(BigDecimal(s.trim)).toOption))
 
-  private def elems(
-    j: Json
-  ): List[Json] = j.asArray.map(_.toList).getOrElse(if j.isNull then Nil else List(j))
+  private def elems(j: Json): List[Json] = j.asArray.map(_.toList).getOrElse(if j.isNull then Nil else List(j))
 
-  private def isEmpty(
-    j: Json
-  ): Boolean =
+  private def isEmpty(j: Json): Boolean =
     j.isNull || j.asString.exists(_.trim.isEmpty) || j.asArray.exists(_.isEmpty) || j.asObject.exists(_.isEmpty)
 
-  private def cmp(
-    a: Json,
-    b: Json
-  ): Option[Int] =
+  private def cmp(a: Json, b: Json): Option[Int] =
     (num(a), num(b)) match {
       case (Some(x), Some(y)) => Some(x.compare(y))
       case _ =>
@@ -221,22 +190,13 @@ object Automation {
         if x.isEmpty || y.isEmpty then None else Some(x.compareTo(y)) // 日付（yyyy-MM-dd）・日時は文字列のまま比べられる
     }
 
-  private def eqLoose(
-    a: Json,
-    b: Json
-  ): Boolean =
+  private def eqLoose(a: Json, b: Json): Boolean =
     (num(a), num(b)) match {
       case (Some(x), Some(y)) => x == y
       case _ => str(a).trim.equalsIgnoreCase(str(b).trim)
     }
 
-  private def compare(
-    actual: Json,
-    op: String,
-    expected: Json,
-    ctx: Json,
-    path: String
-  ): Boolean = {
+  private def compare(actual: Json, op: String, expected: Json, ctx: Json, path: String): Boolean = {
     val expList = expected.asArray.map(_.toList).getOrElse(expected.asString.map(_.split(',').toList.map(s =>
       Json.fromString(s.trim)
     )).getOrElse(List(expected)))
@@ -267,15 +227,9 @@ object Automation {
   // ------------------------------------------------------------------ スマート値
 
   /** ドット区切りのパスで JSON をたどる（配列は .0 などの番号か、.size）。 */
-  def lookup(
-    ctx: Json,
-    path: String
-  ): Json =
+  def lookup(ctx: Json, path: String): Json =
     path.trim.split('.').toList.filter(_.nonEmpty).foldLeft(ctx) {
-      (
-        j,
-        k
-      ) =>
+      (j, k) =>
         if j.isArray && k == "size" then Json.fromInt(j.asArray.get.size)
         else if j.isArray && k.forall(_.isDigit) then j.asArray.get.lift(k.toInt).getOrElse(Json.Null)
         else if j.isArray then
@@ -287,11 +241,7 @@ object Automation {
   private val Tpl = """\{\{\s*([^}|]+?)\s*(?:\|\s*([^}]*?))?\s*\}\}""".r
 
   /** `{{task.key}}`・`{{task.assignee.name | default:未割り当て}}`・`{{today+7}}`・`{{now}}` を展開する。 */
-  def render(
-    s: String,
-    ctx: Json,
-    today: LocalDate
-  ): String =
+  def render(s: String, ctx: Json, today: LocalDate): String =
     Tpl.replaceAllIn(
       s,
       m => {
@@ -307,10 +257,7 @@ object Automation {
       }
     )
 
-  private def special(
-    path: String,
-    today: LocalDate
-  ): Option[Json] = {
+  private def special(path: String, today: LocalDate): Option[Json] = {
     val re = """^today\s*([+-])\s*(\d+)$""".r
     path match {
       case "today" => Some(Json.fromString(today.toString))
@@ -321,10 +268,7 @@ object Automation {
     }
   }
 
-  private def applyFilter(
-    v: String,
-    f: String
-  ): String = f match {
+  private def applyFilter(v: String, f: String): String = f match {
     case s"default:$d" => if v.trim.isEmpty then d.trim else v
     case "upper" => v.toUpperCase
     case "lower" => v.toLowerCase
@@ -336,11 +280,7 @@ object Automation {
   }
 
   /** JSON の値の中の文字列をすべて展開する（Web リクエストの本文など）。 */
-  def renderJson(
-    j: Json,
-    ctx: Json,
-    today: LocalDate
-  ): Json =
+  def renderJson(j: Json, ctx: Json, today: LocalDate): Json =
     j.fold(
       Json.Null,
       Json.fromBoolean,
@@ -427,28 +367,17 @@ object Automation {
     "log"
   )
 
-  def parseActions(
-    j: Json
-  ): Either[String, List[Action]] =
+  def parseActions(j: Json): Either[String, List[Action]] =
     j.asArray.toRight("アクションは配列で指定してください").flatMap(
-      _.toList.foldRight[Either[String, List[Action]]](Right(Nil))(
-        (
-          x,
-          acc
-        ) => acc.flatMap(l => parseAction(x).map(_ :: l))
+      _.toList.foldRight[Either[String, List[Action]]](Right(Nil))((x, acc) =>
+        acc.flatMap(l => parseAction(x).map(_ :: l))
       )
     )
 
-  private def req(
-    c: ACursor,
-    k: String,
-    t: String
-  ): Either[String, String] =
+  private def req(c: ACursor, k: String, t: String): Either[String, String] =
     c.get[String](k).toOption.filter(_.trim.nonEmpty).toRight(s"$t に $k がありません")
 
-  def parseAction(
-    j: Json
-  ): Either[String, Action] = {
+  def parseAction(j: Json): Either[String, Action] = {
     val c = j.hcursor
     val o = (k: String) => c.get[String](k).toOption.filter(_.trim.nonEmpty)
     c.get[String]("type").getOrElse("") match {
@@ -502,10 +431,7 @@ object Automation {
   }
 
   /** ルール全体の検証（保存時）。 */
-  def validate(
-    trigger: Json,
-    actions: Json
-  ): Either[String, Unit] =
+  def validate(trigger: Json, actions: Json): Either[String, Unit] =
     for {
       _ <- parseTrigger(trigger)
       a <- parseActions(actions)
@@ -513,12 +439,10 @@ object Automation {
     } yield ()
 
   /** 定期トリガーを今動かすべきか。last は前回の実行（なければ作成時刻）。 */
-  def scheduledDue(
-    t: Trigger.Scheduled,
-    last: java.time.Instant,
-    now: java.time.Instant,
-    zone: java.time.ZoneId
-  ): Boolean =
+  def scheduledDue(t: Trigger.Scheduled,
+                   last: java.time.Instant,
+                   now: java.time.Instant,
+                   zone: java.time.ZoneId): Boolean =
     t.intervalMinutes match {
       case Some(m) => !last.plusSeconds(m.toLong * 60).isAfter(now)
       case None =>

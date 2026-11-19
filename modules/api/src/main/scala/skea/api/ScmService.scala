@@ -20,21 +20,16 @@ import java.util.UUID
 import scala.concurrent.duration.*
 
 /** ソースコード管理との連携（Webhook の受信・ポーリング）。コミットメッセージのタスクIDでタスクにリンクする。 */
-final class ScmService(
-  integ: IntegrationStore,
-  tasks: TaskStore,
-  projects: ProjectStore,
-  hub: EventHub,
-  api: ScmApi,
-  box: SecretBox,
-  lock: JobLock) {
+final class ScmService(integ: IntegrationStore,
+                       tasks: TaskStore,
+                       projects: ProjectStore,
+                       hub: EventHub,
+                       api: ScmApi,
+                       box: SecretBox,
+                       lock: JobLock) {
 
   /** 受信した Webhook。リンクしたコミットの数を返す。 */
-  def receive(
-    repoId: UUID,
-    headers: Headers,
-    body: Array[Byte]
-  ): Res[Int] =
+  def receive(repoId: UUID, headers: Headers, body: Array[Byte]): Res[Int] =
     integ.repo(repoId).flatMap {
       case None => IO.pure(Left(AppError(ErrorCode.ScmRepoNotFound)))
       case Some(r) =>
@@ -51,10 +46,7 @@ final class ScmService(
         }
     }
 
-  def linkAll(
-    r: RepoRow,
-    commits: List[ScmCommit]
-  ): IO[Int] =
+  def linkAll(r: RepoRow, commits: List[ScmCommit]): IO[Int] =
     projects.find(r.projectId).flatMap {
       case None => IO.pure(0)
       case Some(p) =>
@@ -88,9 +80,7 @@ final class ScmService(
         }.map(_.sum)
     }
 
-  def poll(
-    r: RepoRow
-  ): Res[Int] =
+  def poll(r: RepoRow): Res[Int] =
     (ScmProvider.parse(r.provider), r.tokenEnc.flatMap(box.decrypt)) match {
       case (Some(p), Some(token)) =>
         (
@@ -105,30 +95,28 @@ final class ScmService(
       case (_, None) => IO.pure(Left(AppError(ErrorCode.ScmTokenMissing)))
     }
 
-  private def pollWith(
-    r: RepoRow,
-    p: ScmProvider,
-    token: String
-  ): Res[Int] = sbirds.observe.Telemetry.span("scm.poll", "scm.provider" -> r.provider) {
-    val commits =
-      if !r.allRepos then api.recentCommits(p, r.webUrl, r.apiUrl, r.name, r.branch, token)
-      else
-        // 一括監視: 最近更新されたリポジトリごとに取得する（取得できないリポジトリは飛ばす）
-        api.recentRepos(p, r.webUrl, r.apiUrl, Option(r.name.trim).filter(_.nonEmpty), token).flatMap(_.flatTraverse(
-          n =>
-            api.recentCommits(p, r.webUrl, r.apiUrl, n, None, token).map(_.map(_.copy(repo = Some(n)))).handleError(_ =>
-              Nil
-            )
-        ))
-    commits.attempt.flatMap {
-      case Left(e) =>
-        Integrations.called("scm.poll", "error") *>
-          Log.report(ErrorCode.ScmPollFailed, s"${r.id}: ${e.getMessage}", e) *>
-          IO.pure(Left(AppError(ErrorCode.ScmCommitsUnavailable)))
-      case Right(cs) => Integrations.called("scm.poll", "ok") *>
-          linkAll(r, cs).flatTap(_ => integ.markPolled(r.id, cs.headOption.map(_.sha))).map(Right(_))
+  private def pollWith(r: RepoRow, p: ScmProvider, token: String): Res[Int] =
+    sbirds.observe.Telemetry.span("scm.poll", "scm.provider" -> r.provider) {
+      val commits =
+        if !r.allRepos then api.recentCommits(p, r.webUrl, r.apiUrl, r.name, r.branch, token)
+        else
+          // 一括監視: 最近更新されたリポジトリごとに取得する（取得できないリポジトリは飛ばす）
+          api.recentRepos(p, r.webUrl, r.apiUrl, Option(r.name.trim).filter(_.nonEmpty), token).flatMap(_.flatTraverse(
+            n =>
+              api.recentCommits(p, r.webUrl, r.apiUrl, n, None, token).map(_.map(_.copy(repo = Some(n)))).handleError(
+                _ =>
+                  Nil
+              )
+          ))
+      commits.attempt.flatMap {
+        case Left(e) =>
+          Integrations.called("scm.poll", "error") *>
+            Log.report(ErrorCode.ScmPollFailed, s"${r.id}: ${e.getMessage}", e) *>
+            IO.pure(Left(AppError(ErrorCode.ScmCommitsUnavailable)))
+        case Right(cs) => Integrations.called("scm.poll", "ok") *>
+            linkAll(r, cs).flatTap(_ => integ.markPolled(r.id, cs.headOption.map(_.sha))).map(Right(_))
+      }
     }
-  }
 
   /** トークンを登録したリポジトリを5分ごとに確認する（複数ノードでも1つだけが動く）。 */
   def pollLoop: IO[Nothing] =

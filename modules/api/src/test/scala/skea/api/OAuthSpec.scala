@@ -30,12 +30,10 @@ class OAuthSpec extends ApiDbSuite {
   override protected def apiCfg: ApiConfig = super.apiCfg.copy(oauthClients = clients)
 
   /** 許可して認可コードを受け取り、トークンに換えて、発行された API キーのスコープを返す. */
-  private def grant(
-    clientId: String,
-    secret: String,
-    redirect: String,
-    scope: String
-  ): IO[Either[String, List[String]]] = {
+  private def grant(clientId: String,
+                    secret: String,
+                    redirect: String,
+                    scope: String): IO[Either[String, List[String]]] = {
     val xa = xaFixture()
     val users = new UserStore(xa); val projects = new ProjectStore(xa); val tasks = new TaskStore(xa)
     val sess = new SessionAuth(users, apiCfg)

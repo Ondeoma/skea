@@ -8,15 +8,10 @@ package skea.core
 object FractionalIndex {
   private val digits = (('0' to '9') ++ ('A' to 'Z') ++ ('a' to 'z')).mkString
   private val zero = digits.head
-  private def idx(
-    c: Char
-  ): Int = digits.indexOf(c)
+  private def idx(c: Char): Int = digits.indexOf(c)
 
   /** lo < result < hi（lo, hi が None の場合はそれぞれ下限・上限なし）。lo >= hi のときは lo の後ろに置く。 */
-  def between(
-    lo: Option[String],
-    hi: Option[String]
-  ): String = {
+  def between(lo: Option[String], hi: Option[String]): String = {
     val a = lo.getOrElse("")
     val b = hi.filter(x => a < x)
     midpoint(
@@ -25,10 +20,7 @@ object FractionalIndex {
     )
   }
 
-  private def midpoint(
-    a: String,
-    b: Option[String]
-  ): String = {
+  private def midpoint(a: String, b: Option[String]): String = {
     b match {
       case Some(bb) =>
         var n = 0
@@ -44,7 +36,5 @@ object FractionalIndex {
   }
 
   /** 末尾に追加するときの値。 */
-  def after(
-    last: Option[String]
-  ): String = between(last, None)
+  def after(last: Option[String]): String = between(last, None)
 }

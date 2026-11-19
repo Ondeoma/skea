@@ -14,23 +14,17 @@ import java.time.LocalDate
 import java.util.UUID
 
 /** タスクの操作（REST・MCP・自動化で共通）。権限の確認・変更履歴・通知・Webhook・自動化の起動まで行う。 */
-final class TaskService(
-  tasks: TaskStore,
-  projects: ProjectStore,
-  access: Access2,
-  hub: EventHub,
-  notifier: NotifyService,
-  adminGroups: Set[String]) {
+final class TaskService(tasks: TaskStore,
+                        projects: ProjectStore,
+                        access: Access2,
+                        hub: EventHub,
+                        notifier: NotifyService,
+                        adminGroups: Set[String]) {
 
-  private def link(
-    key: String
-  ) = s"/tasks/$key"
+  private def link(key: String) = s"/tasks/$key"
 
   /** 担当者・報告者は、そのプロジェクトを見られる人だけ。 */
-  def peopleOk(
-    projectId: UUID,
-    ids: List[UUID]
-  ): IO[Either[AppError, Unit]] =
+  def peopleOk(projectId: UUID, ids: List[UUID]): IO[Either[AppError, Unit]] =
     if ids.isEmpty then IO.pure(Right(()))
     else
       projects.audience(projectId, adminGroups).map { a =>
@@ -38,34 +32,20 @@ final class TaskService(
         Either.cond(ids.forall(members), (), AppError(ErrorCode.TaskAssigneeNotMember))
       }
 
-  private def needWrite(
-    op: Op
-  ): Either[AppError, Unit] =
+  private def needWrite(op: Op): Either[AppError, Unit] =
     Either.cond(op.s.canWrite, (), AppError(ErrorCode.ApiKeyReadOnly))
 
   // ---------------------------------------------------------------- 作成
 
   /** タスクを作る。notify が false なら担当・メンションの通知を出さない（取り込み）。need は必要な権限（ヘルプデスクの問い合わせは Requester）。 */
-  def create(
-    op: Op,
-    projectId: UUID,
-    r: CreateTaskReq,
-    notify: Boolean = true,
-    need: Role = Role.Edit
-  ): Res[TaskDto] =
+  def create(op: Op, projectId: UUID, r: CreateTaskReq, notify: Boolean = true, need: Role = Role.Edit): Res[TaskDto] =
     sbirds.observe.Telemetry.span(
       "task.create",
       "project.id" -> projectId.toString
     )(createImpl(op, projectId, r, notify, need))
       .flatTap(res => IO.whenA(res.isRight)(sbirds.observe.Metrics.count("skea.tasks.created", "via" -> op.via)))
 
-  private def createImpl(
-    op: Op,
-    projectId: UUID,
-    r: CreateTaskReq,
-    notify: Boolean,
-    need: Role
-  ): Res[TaskDto] =
+  private def createImpl(op: Op, projectId: UUID, r: CreateTaskReq, notify: Boolean, need: Role): Res[TaskDto] =
     (needWrite(op), Dates.parse(r.startDate, "開始日"), Dates.parse(r.dueDate, "期日")).tupled match {
       case Left(f) => IO.pure(Left(f))
       case Right(_) if r.title.trim.isEmpty => IO.pure(Left(AppError(ErrorCode.TaskTitleRequired)))
@@ -78,12 +58,7 @@ final class TaskService(
           )
         ))
       case Right((_, start, due))
-          if start.zip(due).exists(
-            (
-              s,
-              d
-            ) => s.isAfter(d)
-          ) => IO.pure(Left(AppError(ErrorCode.TaskStartAfterDue)))
+          if start.zip(due).exists((s, d) => s.isAfter(d)) => IO.pure(Left(AppError(ErrorCode.TaskStartAfterDue)))
       case Right((_, start, due)) =>
         access.project(op.s, projectId, need).flatMap {
           case Left(f) => IO.pure(Left(f): Either[AppError, Unit])
@@ -136,16 +111,10 @@ final class TaskService(
   // ---------------------------------------------------------------- 更新
 
   /** JSON の更新内容（TaskPatch のキーだけ）を TaskChanges にする。 */
-  def parsePatch(
-    j: Json
-  ): Either[AppError, TaskChanges] = {
+  def parsePatch(j: Json): Either[AppError, TaskChanges] = {
     val c = j.hcursor
-    def has(
-      k: String
-    ) = c.downField(k).succeeded
-    def optUuid(
-      k: String
-    ): Either[AppError, Option[Option[UUID]]] =
+    def has(k: String) = c.downField(k).succeeded
+    def optUuid(k: String): Either[AppError, Option[Option[UUID]]] =
       if !has(k) then Right(None)
       else
         c.downField(k).focus.filterNot(_.isNull) match {
@@ -155,10 +124,7 @@ final class TaskService(
               Some(Some(u))
             )
         }
-    def optDate(
-      k: String,
-      what: String
-    ): Either[AppError, Option[Option[LocalDate]]] =
+    def optDate(k: String, what: String): Either[AppError, Option[Option[LocalDate]]] =
       if !has(k) then Right(None)
       else Dates.parse(c.get[Option[String]](k).toOption.flatten, what).map(Some(_))
     for {
@@ -195,13 +161,9 @@ final class TaskService(
       fields <- if !has("fields") then Right(Map.empty[UUID, Option[Json]])
       else
         c.downField("fields").as[Map[String, Json]].left.map(_ => AppError(ErrorCode.TaskFieldsNotObject))
-          .flatMap(_.toList.traverse(
-            (
-              k,
-              v
-            ) =>
-              uuidOpt(k).toRight(AppError(ErrorCode.TaskFieldIdInvalid, s"フィールド $k が UUID ではありません")).map(_ ->
-                Option(v).filterNot(_.isNull))
+          .flatMap(_.toList.traverse((k, v) =>
+            uuidOpt(k).toRight(AppError(ErrorCode.TaskFieldIdInvalid, s"フィールド $k が UUID ではありません")).map(_ ->
+              Option(v).filterNot(_.isNull))
           ))
           .map(_.toMap)
       version = c.get[Int]("version").toOption
@@ -223,10 +185,7 @@ final class TaskService(
     )
   }
 
-  private def parseDescription(
-    v: Option[Json],
-    present: Boolean
-  ): Either[AppError, Option[Option[Json]]] =
+  private def parseDescription(v: Option[Json], present: Boolean): Either[AppError, Option[Option[Json]]] =
     if !present then Right(None)
     else
       v.filterNot(_.isNull) match {
@@ -237,11 +196,7 @@ final class TaskService(
         case _ => Left(AppError(ErrorCode.TaskDescriptionInvalid))
       }
 
-  def update(
-    op: Op,
-    task: TaskCore,
-    ch: TaskChanges
-  ): Res[TaskDto] =
+  def update(op: Op, task: TaskCore, ch: TaskChanges): Res[TaskDto] =
     needWrite(op) match {
       case Left(f) => IO.pure(Left(f))
       case Right(_) => peopleOk(
@@ -258,11 +213,7 @@ final class TaskService(
         }
     }
 
-  def move(
-    op: Op,
-    task: TaskCore,
-    r: MoveTaskReq
-  ): Res[TaskDto] =
+  def move(op: Op, task: TaskCore, r: MoveTaskReq): Res[TaskDto] =
     needWrite(op) match {
       case Left(f) => IO.pure(Left(f))
       case Right(_) => tasks.move(task.id, r).flatMap {
@@ -273,10 +224,7 @@ final class TaskService(
     }
 
   /** 変更履歴・通知・Webhook・自動化。並び順だけの変更は履歴に残さない。 */
-  private def afterUpdate(
-    op: Op,
-    r: UpdateResult
-  ): IO[Unit] = {
+  private def afterUpdate(op: Op, r: UpdateResult): IO[Unit] = {
     val a = r.after
     if r.changes.isEmpty then
       // 並び順だけが変わった（他の人の画面のカンバンを更新するため、軽い履歴を残す）
@@ -363,12 +311,8 @@ final class TaskService(
           (
             a.description.fold(IO.pure(Set.empty[UUID]))(mentioned(a.projectId, _)),
             r.before.description.fold(IO.pure(Set.empty[UUID]))(mentioned(a.projectId, _))
-          ).tupled.flatMap(
-            (
-              newM,
-              oldM
-            ) =>
-              mention(op, a, None, newM -- oldM, "説明")
+          ).tupled.flatMap((newM, oldM) =>
+            mention(op, a, None, newM -- oldM, "説明")
           )
         }
       } yield ()
@@ -376,24 +320,19 @@ final class TaskService(
   }
 
   /** メンションされた人（グループ・役割へのメンションは、そのプロジェクトを閲覧できる所属者に広げる）。 */
-  private def mentioned(
-    projectId: UUID,
-    doc: Json
-  ): IO[Set[UUID]] =
+  private def mentioned(projectId: UUID, doc: Json): IO[Set[UUID]] =
     RichText.groupMentions(doc).toList.flatTraverse { k =>
       if k.startsWith("g:") then
         uuidOpt(k.drop(2)).fold(IO.pure(List.empty[UUID]))(g => projects.groupMembers(projectId, g, adminGroups))
       else projects.usersWithRole(projectId, k.drop(2))
     }.map(_.toSet ++ RichText.mentions(doc))
 
-  private def mention(
-    op: Op,
-    t: TaskCore,
-    commentId: Option[UUID],
-    ids: Set[UUID],
-    where: String,
-    internal: Boolean = false
-  ): IO[Unit] =
+  private def mention(op: Op,
+                      t: TaskCore,
+                      commentId: Option[UUID],
+                      ids: Set[UUID],
+                      where: String,
+                      internal: Boolean = false): IO[Unit] =
     IO.whenA(ids.nonEmpty)(
       notifier.send(
         NotificationKind.Mention,
@@ -409,10 +348,7 @@ final class TaskService(
       )
     )
 
-  def delete(
-    op: Op,
-    task: TaskCore
-  ): Res[Unit] =
+  def delete(op: Op, task: TaskCore): Res[Unit] =
     needWrite(op) match {
       case Left(f) => IO.pure(Left(f))
       case Right(_) =>
@@ -435,12 +371,7 @@ final class TaskService(
   // ---------------------------------------------------------------- コメント
 
   /** コメントを追加する。internal は内部コメント（ヘルプデスクのエージェントだけに見え、"ユーザ"には通知しない）。 */
-  def addComment(
-    op: Op,
-    task: TaskCore,
-    body: Json,
-    internal: Boolean = false
-  ): Res[CommentDto] = {
+  def addComment(op: Op, task: TaskCore, body: Json, internal: Boolean = false): Res[CommentDto] = {
     val doc = if body.isString then RichText.fromMarkdown(body.asString.get) else body
     if !RichText.valid(doc) || RichText.isBlank(doc) then IO.pure(Left(AppError(ErrorCode.CommentRequired)))
     else if !op.s.canWrite then IO.pure(Left(AppError(ErrorCode.ApiKeyReadOnly)))
@@ -482,12 +413,7 @@ final class TaskService(
       } yield Right(c)
   }
 
-  def updateComment(
-    op: Op,
-    task: TaskCore,
-    commentId: UUID,
-    body: Json
-  ): Res[CommentDto] = {
+  def updateComment(op: Op, task: TaskCore, commentId: UUID, body: Json): Res[CommentDto] = {
     val doc = if body.isString then RichText.fromMarkdown(body.asString.get) else body
     tasks.comment(commentId).flatMap {
       case None => IO.pure(Left(AppError(ErrorCode.CommentNotFound)))
@@ -513,12 +439,7 @@ final class TaskService(
     }
   }
 
-  def deleteComment(
-    op: Op,
-    task: TaskCore,
-    commentId: UUID,
-    role: Role
-  ): Res[Unit] =
+  def deleteComment(op: Op, task: TaskCore, commentId: UUID, role: Role): Res[Unit] =
     tasks.comment(commentId).flatMap {
       case None => IO.pure(Left(AppError(ErrorCode.CommentNotFound)))
       case Some(old) if !old.author.exists(_.id == op.userId) && role < Role.Admin =>
@@ -536,11 +457,7 @@ final class TaskService(
 
   // ---------------------------------------------------------------- 作業時間
 
-  def addWorklog(
-    op: Op,
-    task: TaskCore,
-    r: WorklogReq
-  ): Res[WorklogDto] =
+  def addWorklog(op: Op, task: TaskCore, r: WorklogReq): Res[WorklogDto] =
     Dates.parse(Some(r.workDate), "作業日") match {
       case Left(f) => IO.pure(Left(f))
       case Right(None) => IO.pure(Left(AppError(ErrorCode.WorklogDateRequired)))
@@ -563,11 +480,7 @@ final class TaskService(
 
   // ---------------------------------------------------------------- 一括
 
-  def bulk(
-    op: Op,
-    ids: List[UUID],
-    patch: Json
-  ): Res[Int] =
+  def bulk(op: Op, ids: List[UUID], patch: Json): Res[Int] =
     parsePatch(patch) match {
       case Left(f) => IO.pure(Left(f))
       case Right(ch) =>

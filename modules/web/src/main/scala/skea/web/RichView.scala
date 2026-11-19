@@ -10,22 +10,14 @@ import scala.scalajs.js.JSConverters.*
 
 /** 表示中の HTML の変化を見て、まとめて（次の描画の前に）f を呼ぶ. v-html で描き直されても付け直せるよう、body の下を見る. */
 private object DomWatch {
-  def onChange(
-    delay: Option[Int]
-  )(
-    f: () => Unit
-  ): Unit = {
+  def onChange(delay: Option[Int])(f: () => Unit): Unit = {
     var queued = false
     val run = () => { queued = false; f() }
-    new dom.MutationObserver(
-      (
-        _,
-        _
-      ) =>
-        if (!queued) {
-          queued = true
-          delay.fold(dom.window.requestAnimationFrame(_ => run()))(ms => dom.window.setTimeout(() => run(), ms))
-        }
+    new dom.MutationObserver((_, _) =>
+      if (!queued) {
+        queued = true
+        delay.fold(dom.window.requestAnimationFrame(_ => run()))(ms => dom.window.setTimeout(() => run(), ms))
+      }
     ).observe(dom.document.body, new dom.MutationObserverInit { childList = true; subtree = true })
     f()
   }
@@ -42,9 +34,7 @@ object Highlight {
   private val Lang = "language-([A-Za-z0-9_+-]+)".r
 
   /** lowlight の結果（hast）を DOM にする. */
-  private def toNode(
-    n: js.Dynamic
-  ): dom.Node =
+  private def toNode(n: js.Dynamic): dom.Node =
     if (n.`type`.toString == "text") dom.document.createTextNode(n.value.toString)
     else {
       val el = dom.document.createElement("span").asInstanceOf[dom.HTMLElement]
@@ -56,9 +46,7 @@ object Highlight {
       el
     }
 
-  private def highlightIn(
-    root: dom.Document
-  ): Unit = {
+  private def highlightIn(root: dom.Document): Unit = {
     val codes = root.querySelectorAll(".rich pre code:not([data-hl])")
     if (codes.length > 0) {
       if (!lowlight.ready().asInstanceOf[Boolean])
@@ -103,28 +91,17 @@ object LinkTitles {
     "skawau" -> s"/(?:view|office|files)/($Uuid)" // ファイル・フォルダ
   )
 
-  private final class Watcher(
-    provider: String,
-    base: String,
-    path: String) {
+  private final class Watcher(provider: String, base: String, path: String) {
     private val re = js.RegExp("^" + base.replaceAll("""[.*+?^${}()|\[\]\\]""", """\\$0""") + path + "(?:[/?#]|$)")
     private var enabled = true
     private var timer: Option[Int] = None
     private val waiting = scala.collection.mutable.LinkedHashMap.empty[String, List[dom.HTMLAnchorElement]]
 
     // data-skiwi・data-skawau に状態を持つ
-    private def state(
-      a: dom.HTMLElement
-    ): Option[String] = a.dataset.get(provider)
-    private def setState(
-      a: dom.HTMLElement,
-      v: String
-    ): Unit = a.dataset(provider) = v
+    private def state(a: dom.HTMLElement): Option[String] = a.dataset.get(provider)
+    private def setState(a: dom.HTMLElement, v: String): Unit = a.dataset(provider) = v
 
-    private def apply(
-      a: dom.HTMLAnchorElement,
-      item: Option[LinkTitleDto]
-    ): Unit = item match {
+    private def apply(a: dom.HTMLAnchorElement, item: Option[LinkTitleDto]): Unit = item match {
       case None => setState(a, "none")
       case Some(it) =>
         setState(a, "ok")
@@ -145,39 +122,19 @@ object LinkTitles {
     private def flush(): Unit = {
       timer = None
       val batch = waiting.take(100).toList
-      batch.foreach(
-        (
-          id,
-          _
-        ) => waiting.remove(id)
-      )
+      batch.foreach((id, _) => waiting.remove(id))
       if (batch.nonEmpty) {
         Api.linkTitles(provider, batch.map(_._1)).onComplete { r =>
           r match {
             case scala.util.Success(res) if !res.connected =>
               enabled = false
-              batch.foreach(
-                (
-                  _,
-                  as
-                ) => as.foreach(setState(_, "off"))
-              )
+              batch.foreach((_, as) => as.foreach(setState(_, "off")))
             case scala.util.Success(res) =>
               val byId = res.items.map(p => p.id.toString.toLowerCase -> p).toMap
-              batch.foreach(
-                (
-                  id,
-                  as
-                ) => as.foreach(a => apply(a, byId.get(id)))
-              )
+              batch.foreach((id, as) => as.foreach(a => apply(a, byId.get(id))))
             case scala.util.Failure(_) =>
               // 問い合わせできなかったリンクは、次に描き直されたときにもう一度試す
-              batch.foreach(
-                (
-                  _,
-                  as
-                ) => as.foreach(_.dataset.remove(provider))
-              )
+              batch.foreach((_, as) => as.foreach(_.dataset.remove(provider)))
           }
           if (waiting.nonEmpty) timer = Some(dom.window.setTimeout(() => flush(), 50))
         }
@@ -212,9 +169,7 @@ object LinkTitles {
 
   private var watchers = Map.empty[String, Watcher]
 
-  def start(
-    svc: LinkServiceDto
-  ): Unit = if (svc.connected) watchers.get(svc.provider) match {
+  def start(svc: LinkServiceDto): Unit = if (svc.connected) watchers.get(svc.provider) match {
     case Some(w) => w.reset()
     case None => paths.get(svc.provider).foreach(p => watchers += svc.provider -> new Watcher(svc.provider, svc.url, p))
   }
@@ -232,10 +187,7 @@ object LinkTitles {
 object Images {
 
   /** 画像を中央で正方形に切り取り、size px に縮める. GIF などで読めないときは元のファイルを返す. */
-  def squareThumb(
-    file: dom.File,
-    size: Int = 256
-  ): Future[dom.File] = {
+  def squareThumb(file: dom.File, size: Int = 256): Future[dom.File] = {
     val p = scala.concurrent.Promise[dom.File]()
     val url = dom.URL.createObjectURL(file)
     val img = dom.document.createElement("img").asInstanceOf[dom.HTMLImageElement]

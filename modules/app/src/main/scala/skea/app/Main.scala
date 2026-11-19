@@ -28,16 +28,15 @@ import sbirds.storage.{S3BlobStore, S3Config}
 
 import scala.concurrent.duration.*
 
-final case class AppConfig(
-  port: Int,
-  db: DbConfig,
-  oidc: Option[OidcConfig],
-  api: ApiConfig,
-  staticDir: Option[String],
-  s3: Option[S3Config],
-  smtp: Option[SmtpConfig],
-  appSecret: String,
-  nodeId: String)
+final case class AppConfig(port: Int,
+                           db: DbConfig,
+                           oidc: Option[OidcConfig],
+                           api: ApiConfig,
+                           staticDir: Option[String],
+                           s3: Option[S3Config],
+                           smtp: Option[SmtpConfig],
+                           appSecret: String,
+                           nodeId: String)
 
 object Main extends IOApp.Simple {
 
@@ -190,10 +189,7 @@ object Main extends IOApp.Simple {
     } yield ()
 
   /** DB（Patroni のプライマリ）が使えるまで待ってからマイグレーションする。複数ノード同時起動でも Flyway のロックで1回だけ適用される。 */
-  private def migrateWithRetry(
-    cfg: AppConfig,
-    attempt: Int = 1
-  ): IO[Int] =
+  private def migrateWithRetry(cfg: AppConfig, attempt: Int = 1): IO[Int] =
     Database.migrate(cfg.db).handleErrorWith { e =>
       if attempt >= 60 then IO.raiseError(e)
       else
@@ -202,12 +198,8 @@ object Main extends IOApp.Simple {
     }
 
   /** DB から定期的に読むメトリクス（skorimako のダッシュボード・アラート用）。 */
-  private def gauges(
-    xa: doobie.Transactor[IO]
-  ): Resource[IO, Unit] = {
-    def q(
-      sqlText: doobie.Fragment
-    ): IO[Long] = sqlText.query[Long].unique.transact(xa)
+  private def gauges(xa: doobie.Transactor[IO]): Resource[IO, Unit] = {
+    def q(sqlText: doobie.Fragment): IO[Long] = sqlText.query[Long].unique.transact(xa)
     // 未完了のタスク（削除・アーカイブしたプロジェクトのものは除く）
     val open = fr"""from task t join status s on s.id = t.status_id join project p on p.id = t.project_id
                     where t.deleted_at is null and not p.archived and s.category <> 'done'"""
@@ -239,10 +231,7 @@ object Main extends IOApp.Simple {
   }
 
   /** ロードバランサー用のヘルスチェック。DB（プライマリ）に書けない状態なら 503。 */
-  private def healthRoutes(
-    xa: doobie.Transactor[IO],
-    node: String
-  ): HttpRoutes[IO] = HttpRoutes.of[IO] {
+  private def healthRoutes(xa: doobie.Transactor[IO], node: String): HttpRoutes[IO] = HttpRoutes.of[IO] {
     case GET -> Root / "healthz" =>
       sql"select not pg_is_in_recovery()".query[Boolean].unique.transact(xa).timeout(3.seconds).attempt.flatMap {
         case Right(true) => text(Status.Ok, s"ok $node")
@@ -252,48 +241,32 @@ object Main extends IOApp.Simple {
       }
   }
 
-  private def text(
-    status: Status,
-    body: String
-  ): IO[Response[IO]] =
+  private def text(status: Status, body: String): IO[Response[IO]] =
     IO.pure(Response[IO](status).withEntity(body)(using EntityEncoder.stringEncoder))
 
-  private def blobStore(
-    cfg: AppConfig
-  ): Resource[IO, Option[sbirds.storage.BlobStore]] = cfg.s3 match {
+  private def blobStore(cfg: AppConfig): Resource[IO, Option[sbirds.storage.BlobStore]] = cfg.s3 match {
     case Some(c) => S3BlobStore.resource(c).evalTap(_.ensureBucket).map(Some(_))
     case None => Resource.eval(sbirds.observe.Log.println("[skea] WARNING: S3_ENDPOINT が未設定のため、添付ファイルは使えません").as(None))
   }
 
-  private def startupNotes(
-    cfg: AppConfig
-  ): IO[Unit] =
+  private def startupNotes(cfg: AppConfig): IO[Unit] =
     IO.whenA(cfg.smtp.isEmpty)(sbirds.observe.Log.println("[skea] WARNING: SMTP_HOST が未設定のため、メールは送りません")) *>
       IO.whenA(
         cfg.oidc.isEmpty
       )(sbirds.observe.Log.println("[skea] WARNING: OIDC が未設定です。開発用のログイン（DEV_LOGIN）を使います。本番では使わないでください"))
 
   /** 期日が近い・過ぎたタスクを担当者に1日1回通知する（1時間ごとに確認）。 */
-  private def dueLoop(
-    tasks: TaskStore,
-    activity: ActivityStore,
-    notifier: NotifyService,
-    lock: JobLock,
-    cfg: AppConfig
-  ): IO[Unit] =
+  private def dueLoop(tasks: TaskStore,
+                      activity: ActivityStore,
+                      notifier: NotifyService,
+                      lock: JobLock,
+                      cfg: AppConfig): IO[Unit] =
     Periodic.run(2.minutes, 1.hour, ErrorCode.DueCheckFailed)(lock.exclusive("due-check", 50.minutes) {
       val zone = Op.zone(cfg.api.timezone)
       val today = java.time.LocalDate.now(zone)
       val since = today.atStartOfDay(zone).toInstant
       tasks.dueSoon(today).flatMap(_.traverse_ {
-        (
-          tid,
-          pid,
-          key,
-          title,
-          due,
-          assignee
-        ) =>
+        (tid, pid, key, title, due, assignee) =>
           activity.dueNotified(assignee, tid, since).ifM(
             IO.unit, {
               val when = if due.isBefore(today) then "期日を過ぎています" else if due == today then "今日が期日です" else "明日が期日です"
@@ -313,11 +286,7 @@ object Main extends IOApp.Simple {
       })
     })
 
-  private def purgeLoop(
-    users: UserStore,
-    activity: ActivityStore,
-    lock: JobLock
-  ): IO[Unit] =
+  private def purgeLoop(users: UserStore, activity: ActivityStore, lock: JobLock): IO[Unit] =
     Periodic.run(10.minutes, 1.hour, ErrorCode.PurgeFailed)(lock.exclusive("purge", 50.minutes)(
       IO.realTimeInstant.flatMap(users.purgeExpired) *> activity.purgeOld(180).void
     ))
@@ -326,19 +295,14 @@ object Main extends IOApp.Simple {
    * すべての応答に付けるセキュリティ用のヘッダー（個別に付けたものは上書きしない）と、リクエスト本文の大きさの上限
    * （ファイルのアップロード（multipart）は MAX_UPLOAD_MB（と multipart の見出しの分の余裕 1MB）、受信 Webhook は 10MB、それ以外は 2MB）。
    */
-  private def secured(
-    routes: HttpRoutes[IO],
-    maxUpload: Long
-  ): HttpRoutes[IO] = {
+  private def secured(routes: HttpRoutes[IO], maxUpload: Long): HttpRoutes[IO] = {
     val defaults = List(
       "X-Frame-Options" -> "DENY",
       "X-Content-Type-Options" -> "nosniff",
       "Referrer-Policy" -> "same-origin",
       "Content-Security-Policy" -> "frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
     )
-    def limitOf(
-      req: Request[IO]
-    ): Long =
+    def limitOf(req: Request[IO]): Long =
       if req.contentType.exists(_.mediaType.isMultipart) then maxUpload + 1024 * 1024
       else if req.pathInfo.renderString.startsWith("/hooks/") then 10L * 1024 * 1024
       else 2L * 1024 * 1024
@@ -353,27 +317,16 @@ object Main extends IOApp.Simple {
           )
         else {
           // Content-Length がない（chunked）ときも、上限を超えたら読むのをやめる
-          val body = req.body.chunks.mapAccumulate(0L)(
-            (
-              n,
-              c
-            ) => (n + c.size, c)
-          ).flatMap {
-            (
-              n,
-              c
-            ) =>
+          val body = req.body.chunks.mapAccumulate(0L)((n, c) => (n + c.size, c)).flatMap {
+            (n, c) =>
               if n > limit then fs2.Stream.raiseError[IO](new IllegalArgumentException("request body too large"))
               else fs2.Stream.chunk(c)
           }
           routes(req.withBodyStream(body))
         }
       res.map(r =>
-        defaults.foldLeft(r)(
-          (
-            acc,
-            h
-          ) => if acc.headers.get(org.typelevel.ci.CIString(h._1)).isDefined then acc else acc.putHeaders(h)
+        defaults.foldLeft(r)((acc, h) =>
+          if acc.headers.get(org.typelevel.ci.CIString(h._1)).isDefined then acc else acc.putHeaders(h)
         )
       )
     }
@@ -383,9 +336,7 @@ object Main extends IOApp.Simple {
   private val apiPaths = List("api", "auth", "hooks", "mcp", "oauth")
 
   /** ビルド済みの画面の配信。存在しないパスは index.html（SPA）。 */
-  private def spa(
-    dir: String
-  ): HttpRoutes[IO] = {
+  private def spa(dir: String): HttpRoutes[IO] = {
     val files = fileService[IO](FileService.Config(dir))
     val index = HttpRoutes.of[IO] {
       case req @ GET -> _ if !apiPaths.exists(p => req.pathInfo.renderString.startsWith("/" + p)) =>

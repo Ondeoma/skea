@@ -13,22 +13,15 @@ import java.util.UUID
 import scala.concurrent.duration.*
 
 /** テンプレートからのタスクの作成と、繰り返しタスク（決まった日に作る）。 */
-final class TemplateService(
-  templates: TemplateStore,
-  projects: ProjectStore,
-  svc: TaskService,
-  sessions: SessionAuth,
-  lock: JobLock,
-  cfg: ApiConfig) {
+final class TemplateService(templates: TemplateStore,
+                            projects: ProjectStore,
+                            svc: TaskService,
+                            sessions: SessionAuth,
+                            lock: JobLock,
+                            cfg: ApiConfig) {
 
   /** テンプレートからタスク（とサブタスク）を作る。date は {{date}} と期日の起点。 */
-  def instantiate(
-    op: Op,
-    tpl: TemplateDto,
-    projectId: UUID,
-    date: LocalDate,
-    activeSprint: Boolean
-  ): Res[TaskDto] = {
+  def instantiate(op: Op, tpl: TemplateDto, projectId: UUID, date: LocalDate, activeSprint: Boolean): Res[TaskDto] = {
     val title = tpl.title.replace("{{date}}", date.toString).replace("{{month}}", date.toString.take(7))
     val sprint = if activeSprint then
       projects.sprints(projectId, includeClosed = false).map(_.find(_.state == "active").map(_.id))
@@ -65,17 +58,10 @@ final class TemplateService(
     }
   }
 
-  def nextRun(
-    frequency: String,
-    weekday: Option[Int],
-    monthday: Option[Int],
-    after: LocalDate
-  ): LocalDate =
+  def nextRun(frequency: String, weekday: Option[Int], monthday: Option[Int], after: LocalDate): LocalDate =
     Recurrence.next(frequency, weekday, monthday, after)
 
-  def validate(
-    r: RecurringReq
-  ): Either[String, Unit] =
+  def validate(r: RecurringReq): Either[String, Unit] =
     if !Frequency.all.contains(r.frequency) then Left("頻度は daily / weekly / monthly です")
     else if r.frequency == Frequency.Weekly && !r.weekday.exists(d => d >= 1 && d <= 7) then Left("毎週の曜日を選んでください")
     else if r.frequency == Frequency.Monthly && !r.monthday.exists(d => d >= 1 && d <= 31) then Left("毎月の日を選んでください")

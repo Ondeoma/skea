@@ -10,15 +10,10 @@ import org.http4s.headers.Authorization
 import java.time.{Instant, OffsetDateTime}
 
 /** 各サービスの REST API で最近のコミットを取得する（Webhook を設定できない環境向けのポーリング）。 */
-final class ScmApi(
-  http: Client[IO]) {
+final class ScmApi(http: Client[IO]) {
 
   /** API の URL（未指定ならサービスの既定。Forgejo は Web の URL から作る）。 */
-  def apiBase(
-    p: ScmProvider,
-    webUrl: String,
-    apiUrl: Option[String]
-  ): String =
+  def apiBase(p: ScmProvider, webUrl: String, apiUrl: Option[String]): String =
     apiUrl.map(_.stripSuffix("/")).getOrElse(p match {
       case ScmProvider.GitHub => "https://api.github.com"
       case ScmProvider.GitLab =>
@@ -30,29 +25,21 @@ final class ScmApi(
         s"${u.scheme.fold("https")(_.value)}://${u.authority.fold("")(_.toString)}/api/v1"
     })
 
-  private def get(
-    url: String,
-    auth: Header.ToRaw
-  ): IO[Json] =
+  private def get(url: String, auth: Header.ToRaw): IO[Json] =
     http.expect[Json](Request[IO](
       Method.GET,
       Uri.unsafeFromString(url)
     ).putHeaders(auth, "Accept" -> "application/json", "User-Agent" -> "skea"))
 
-  private def s(
-    c: ACursor,
-    k: String
-  ) = c.get[String](k).getOrElse("")
+  private def s(c: ACursor, k: String) = c.get[String](k).getOrElse("")
 
   /** name は owner/repo（Bitbucket は workspace/repo、GitLab はグループを含むパス）。 */
-  def recentCommits(
-    p: ScmProvider,
-    webUrl: String,
-    apiUrl: Option[String],
-    name: String,
-    branch: Option[String],
-    token: String
-  ): IO[List[ScmCommit]] = {
+  def recentCommits(p: ScmProvider,
+                    webUrl: String,
+                    apiUrl: Option[String],
+                    name: String,
+                    branch: Option[String],
+                    token: String): IO[List[ScmCommit]] = {
     val base = apiBase(p, webUrl, apiUrl)
     val enc = java.net.URLEncoder.encode(_: String, "UTF-8")
     p match {
@@ -110,14 +97,12 @@ final class ScmApi(
   }
 
   /** 最近更新されたリポジトリ（owner/repo）。owner を指定するとその組織・ユーザー・グループのものだけ（一括監視のポーリング）。 */
-  def recentRepos(
-    p: ScmProvider,
-    webUrl: String,
-    apiUrl: Option[String],
-    owner: Option[String],
-    token: String,
-    limit: Int = 20
-  ): IO[List[String]] = {
+  def recentRepos(p: ScmProvider,
+                  webUrl: String,
+                  apiUrl: Option[String],
+                  owner: Option[String],
+                  token: String,
+                  limit: Int = 20): IO[List[String]] = {
     val base = apiBase(p, webUrl, apiUrl)
     val enc = java.net.URLEncoder.encode(_: String, "UTF-8")
     val names: IO[List[String]] = p match {

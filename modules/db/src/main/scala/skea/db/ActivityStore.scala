@@ -13,31 +13,27 @@ import java.time.Instant
 import java.util.UUID
 
 /** 送信待ちのメール。 */
-final case class MailRow(
-  id: UUID,
-  userId: Option[UUID],
-  toAddress: Option[String],
-  projectId: Option[UUID],
-  subject: String,
-  body: String,
-  attempts: Int)
+final case class MailRow(id: UUID,
+                         userId: Option[UUID],
+                         toAddress: Option[String],
+                         projectId: Option[UUID],
+                         subject: String,
+                         body: String,
+                         attempts: Int)
 
 /** 画面内の通知・メールの送信待ち・監査ログ。 */
-final class ActivityStore(
-  xa: Transactor[IO]) extends TxStore(xa) {
+final class ActivityStore(xa: Transactor[IO]) extends TxStore(xa) {
 
   // ---------------------------------------------------------------- 通知
 
-  def notify(
-    userId: UUID,
-    kind: String,
-    projectId: Option[UUID],
-    taskId: Option[UUID],
-    commentId: Option[UUID],
-    actor: Option[UUID],
-    title: String,
-    body: String
-  ): IO[UUID] = tx {
+  def notify(userId: UUID,
+             kind: String,
+             projectId: Option[UUID],
+             taskId: Option[UUID],
+             commentId: Option[UUID],
+             actor: Option[UUID],
+             title: String,
+             body: String): IO[UUID] = tx {
     val id = UUID.randomUUID()
     sql"""insert into notification (id, user_id, kind, project_id, task_id, comment_id, actor_id, title, body)
           values ($id, $userId, $kind, $projectId, $taskId, $commentId, $actor, $title, $body)""".update.run.as(id)
@@ -49,14 +45,12 @@ final class ActivityStore(
          left join app_user u on u.id = n.actor_id"""
 
   /** kinds が空ならすべて。projectIds は今見られるプロジェクト（権限を外されたプロジェクトの通知は出さない）。 */
-  def list(
-    userId: UUID,
-    kinds: List[String],
-    unreadOnly: Boolean,
-    projectIds: List[UUID],
-    before: Option[Instant],
-    limit: Int
-  ): IO[NotificationListDto] =
+  def list(userId: UUID,
+           kinds: List[String],
+           unreadOnly: Boolean,
+           projectIds: List[UUID],
+           before: Option[Instant],
+           limit: Int): IO[NotificationListDto] =
     tx(
       for {
         items <-
@@ -71,65 +65,44 @@ final class ActivityStore(
       } yield NotificationListDto(items, unread)
     )
 
-  def unread(
-    userId: UUID
-  ): IO[UnreadDto] = tx(
+  def unread(userId: UUID): IO[UnreadDto] = tx(
     sql"""select count(*), count(*) filter (where kind = 'mention') from notification where user_id = $userId and read_at is null"""
       .query[(Int, Int)].unique.map(UnreadDto.apply)
   )
 
-  def markRead(
-    userId: UUID,
-    ids: List[UUID]
-  ): IO[Unit] = tx(
+  def markRead(userId: UUID, ids: List[UUID]): IO[Unit] = tx(
     sql"update notification set read_at = now() where user_id = $userId and id = any(${ids.toArray}) and read_at is null".update.run.void
   )
 
-  def markAllRead(
-    userId: UUID,
-    kinds: List[String]
-  ): IO[Unit] = tx(
+  def markAllRead(userId: UUID, kinds: List[String]): IO[Unit] = tx(
     (fr"update notification set read_at = now() where user_id = $userId and read_at is null" ++
       (if kinds.isEmpty then Fragment.empty else fr"and kind = any(${kinds.toArray})")).update.run.void
   )
 
   /** タスクを開いたら、そのタスクの通知を既読にする。 */
-  def markTaskRead(
-    userId: UUID,
-    taskId: UUID
-  ): IO[Unit] = tx(
+  def markTaskRead(userId: UUID, taskId: UUID): IO[Unit] = tx(
     sql"update notification set read_at = now() where user_id = $userId and task_id = $taskId and read_at is null".update.run.void
   )
 
   /** 同じ日・同じタスクの期限の通知はしない（重複防止）。 */
-  def dueNotified(
-    userId: UUID,
-    taskId: UUID,
-    since: Instant
-  ): IO[Boolean] = tx(
-    sql"select exists(select 1 from notification where user_id = $userId and task_id = $taskId and kind = 'due' and at >= $since)".query[
+  def dueNotified(userId: UUID, taskId: UUID, since: Instant): IO[Boolean] =
+    tx(sql"select exists(select 1 from notification where user_id = $userId and task_id = $taskId and kind = 'due' and at >= $since)".query[
       Boolean
-    ].unique
-  )
+    ].unique)
 
-  def purgeOld(
-    days: Int
-  ): IO[Int] = tx(
-    sql"delete from notification where at < now() - make_interval(days => $days)".update.run
-  )
+  def purgeOld(days: Int): IO[Int] =
+    tx(sql"delete from notification where at < now() - make_interval(days => $days)".update.run)
 
   // ---------------------------------------------------------------- メール
 
   /** dedupe_key が同じ未送信のメールがあれば、本文を差し替えて送信を遅らせる（まとめて1通にする）。 */
-  def enqueueMail(
-    userId: Option[UUID],
-    to: Option[String],
-    projectId: Option[UUID],
-    subject: String,
-    body: String,
-    dedupe: Option[String],
-    delaySeconds: Int
-  ): IO[Unit] = tx {
+  def enqueueMail(userId: Option[UUID],
+                  to: Option[String],
+                  projectId: Option[UUID],
+                  subject: String,
+                  body: String,
+                  dedupe: Option[String],
+                  delaySeconds: Int): IO[Unit] = tx {
     val id = UUID.randomUUID()
     dedupe match {
       case Some(k) =>
@@ -145,11 +118,7 @@ final class ActivityStore(
   }
 
   /** 送信する分を取り出し（SKIP LOCKED で複数ノードの重複を防ぐ）、send の結果を記録する。 */
-  def processMail(
-    batch: Int
-  )(
-    send: MailRow => IO[OutboxResult]
-  ): IO[Int] =
+  def processMail(batch: Int)(send: MailRow => IO[OutboxResult]): IO[Int] =
     processEach(
       sql"""select id, user_id, to_address, project_id, subject, body, attempts from mail_outbox
             where sent_at is null and not skipped and not_before <= now() order by not_before limit $batch for update skip locked""".query[
@@ -168,10 +137,7 @@ final class ActivityStore(
     }
 
   /** メールを送ってよいか（ユーザーが有効で、その種類のメールを止めていない）。宛先のアドレスを返す。 */
-  def mailTarget(
-    userId: UUID,
-    kind: Option[String]
-  ): IO[Option[(String, String)]] = tx(
+  def mailTarget(userId: UUID, kind: Option[String]): IO[Option[(String, String)]] = tx(
     sql"""select u.email, u.name from app_user u where u.id = $userId and not u.disabled and u.email is not null
           and not exists(select 1 from notify_pref p where p.user_id = u.id and p.kind = ${kind.getOrElse(
         ""
@@ -181,21 +147,11 @@ final class ActivityStore(
 
   // ---------------------------------------------------------------- 監査ログ
 
-  def audit(
-    actor: Option[UUID],
-    via: String,
-    action: String,
-    target: Option[String],
-    detail: Json
-  ): IO[Unit] = tx(
+  def audit(actor: Option[UUID], via: String, action: String, target: Option[String], detail: Json): IO[Unit] = tx(
     sql"insert into audit_log (actor_id, via, action, target, detail) values ($actor, $via, $action, $target, $detail)".update.run.void
   )
 
-  def auditLog(
-    before: Option[Long],
-    action: Option[String],
-    limit: Int
-  ): IO[List[AuditDto]] = tx(
+  def auditLog(before: Option[Long], action: Option[String], limit: Int): IO[List[AuditDto]] = tx(
     (fr"""select a.id, a.at, u.id, u.name, u.avatar_url, a.via, a.action, a.target, a.detail
           from audit_log a left join app_user u on u.id = a.actor_id where true""" ++
       before.fold(Fragment.empty)(b => fr"and a.id < $b") ++

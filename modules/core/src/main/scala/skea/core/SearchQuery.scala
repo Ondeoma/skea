@@ -16,16 +16,11 @@ object SearchQuery {
     case Eq, Lt, Gt, Le, Ge
   }
 
-  final case class Filter(
-    key: String,
-    op: Op,
-    value: String,
-    negate: Boolean)
-  final case class Query(
-    filters: List[Filter],
-    text: List[String],
-    negText: List[String],
-    order: List[(String, Boolean)]) {
+  final case class Filter(key: String, op: Op, value: String, negate: Boolean)
+  final case class Query(filters: List[Filter],
+                         text: List[String],
+                         negText: List[String],
+                         order: List[(String, Boolean)]) {
     def isEmpty: Boolean = filters.isEmpty && text.isEmpty && negText.isEmpty
   }
 
@@ -99,9 +94,7 @@ object SearchQuery {
   )
 
   /** 字句に分ける（"..." は1語）。 */
-  private[core] def tokens(
-    s: String
-  ): List[String] = {
+  private[core] def tokens(s: String): List[String] = {
     val out = List.newBuilder[String]
     val cur = new StringBuilder
     var inQ = false
@@ -117,9 +110,7 @@ object SearchQuery {
 
   private val FilterRe = """^(-?)([^\s:<>=]+?)(:|<=|>=|<|>)(.*)$""".r
 
-  def parse(
-    s: String
-  ): Either[String, Query] = {
+  def parse(s: String): Either[String, Query] = {
     val ts = tokens(s)
     val filters = List.newBuilder[Filter]
     val text = List.newBuilder[String]
@@ -157,10 +148,7 @@ object SearchQuery {
   }
 
   /** 日付の値（today、-7d、+2w、-1m、2026-12-01）。 */
-  def date(
-    v: String,
-    today: LocalDate
-  ): Option[LocalDate] = {
+  def date(v: String, today: LocalDate): Option[LocalDate] = {
     val t = v.trim.toLowerCase
     if t == "today" || t == "今日" then Some(today)
     else if t == "tomorrow" || t == "明日" then Some(today.plusDays(1))
@@ -182,7 +170,5 @@ object SearchQuery {
   }
 
   /** 1つの語を PGroonga のクエリ構文のフレーズにする（構文の注入を防ぐ）。 */
-  def phrase(
-    w: String
-  ): String = "\"" + w.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+  def phrase(w: String): String = "\"" + w.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 }

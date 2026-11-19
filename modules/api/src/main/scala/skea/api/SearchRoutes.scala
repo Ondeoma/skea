@@ -11,12 +11,11 @@ import java.time.Instant
 import java.util.UUID
 
 /** 検索・保存した検索条件・通知。 */
-final class SearchRoutes(
-  search: SearchStore,
-  projects: ProjectStore,
-  activity: ActivityStore,
-  val sessions: SessionAuth,
-  val access: Access2)
+final class SearchRoutes(search: SearchStore,
+                         projects: ProjectStore,
+                         activity: ActivityStore,
+                         val sessions: SessionAuth,
+                         val access: Access2)
   extends RouteSupport {
 
   val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
@@ -33,9 +32,7 @@ final class SearchRoutes(
     case req @ POST -> Root / "api" / "notifications" / "read-all" => postNotificationsReadAll(req)
   }
 
-  private def getSearch(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def getSearch(req: Request[IO]): IO[Response[IO]] =
     authed(req) { s =>
       SearchQuery.parse(param(req, "q").getOrElse("")) match {
         case Left(e) => Ok(SearchResultDto(Nil, 0, Some(e)))
@@ -57,14 +54,10 @@ final class SearchRoutes(
       }
     }
 
-  private def getFilters(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def getFilters(req: Request[IO]): IO[Response[IO]] =
     authed(req)(s => search.savedFilters(s.user.id).flatMap(Ok(_)))
 
-  private def postFilters(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def postFilters(req: Request[IO]): IO[Response[IO]] =
     authed(req)(s =>
       body[SavedFilterReq](req)(r =>
         if r.name.trim.isEmpty || r.query.trim.isEmpty then err(ErrorCode.FilterNameAndQueryRequired)
@@ -72,47 +65,26 @@ final class SearchRoutes(
       )
     )
 
-  private def deleteFilter(
-    req: Request[IO],
-    id: UUID
-  ): IO[Response[IO]] =
+  private def deleteFilter(req: Request[IO], id: UUID): IO[Response[IO]] =
     authed(req)(s => search.deleteFilter(s.user.id, id) *> NoContent())
 
-  private def getProjectBoardFilters(
-    req: Request[IO],
-    pid: UUID
-  ): IO[Response[IO]] =
-    withProject(req, pid, Role.View)(
-      (
-        s,
-        _
-      ) => search.boardFilters(pid, s.user.id).flatMap(Ok(_))
-    )
+  private def getProjectBoardFilters(req: Request[IO], pid: UUID): IO[Response[IO]] =
+    withProject(req, pid, Role.View)((s, _) => search.boardFilters(pid, s.user.id).flatMap(Ok(_)))
 
-  private def postProjectBoardFilters(
-    req: Request[IO],
-    pid: UUID
-  ): IO[Response[IO]] = {
+  private def postProjectBoardFilters(req: Request[IO], pid: UUID): IO[Response[IO]] = {
     // 自分用は閲覧権限で、プロジェクトで共有するものは編集権限で保存できる
-    withProject(req, pid, Role.View)(
-      (
-        s,
-        role
-      ) =>
-        body[BoardFilterReq](req)(r =>
-          if r.name.trim.isEmpty || r.name.length > 50 then err(ErrorCode.FilterNameTooLong)
-          else if r.cond.isEmpty then err(ErrorCode.FilterQueryMissing)
-          else if r.cond.productIterator.exists(_.toString.length > 200) then err(ErrorCode.FilterQueryTooLong)
-          else if r.shared && role < Role.Edit then err(ErrorCode.FilterShareNeedsEdit)
-          else search.saveBoardFilter(pid, s.user.id, r).flatMap(_.fold(fail, Created(_)))
-        )
+    withProject(req, pid, Role.View)((s, role) =>
+      body[BoardFilterReq](req)(r =>
+        if r.name.trim.isEmpty || r.name.length > 50 then err(ErrorCode.FilterNameTooLong)
+        else if r.cond.isEmpty then err(ErrorCode.FilterQueryMissing)
+        else if r.cond.productIterator.exists(_.toString.length > 200) then err(ErrorCode.FilterQueryTooLong)
+        else if r.shared && role < Role.Edit then err(ErrorCode.FilterShareNeedsEdit)
+        else search.saveBoardFilter(pid, s.user.id, r).flatMap(_.fold(fail, Created(_)))
+      )
     )
   }
 
-  private def deleteBoardFilter(
-    req: Request[IO],
-    id: UUID
-  ): IO[Response[IO]] =
+  private def deleteBoardFilter(req: Request[IO], id: UUID): IO[Response[IO]] =
     authed(req)(s =>
       search.boardFilter(id).flatMap {
         case Some((pid, Some(uid), _)) if uid == s.user.id =>
@@ -126,9 +98,7 @@ final class SearchRoutes(
       }
     )
 
-  private def getNotifications(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def getNotifications(req: Request[IO]): IO[Response[IO]] =
     authed(req) { s =>
       val kinds =
         param(req, "kinds").toList.flatMap(_.split(',').toList.map(_.trim)).filter(NotificationKind.all.contains)
@@ -146,19 +116,13 @@ final class SearchRoutes(
       )
     }
 
-  private def getNotificationsUnread(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def getNotificationsUnread(req: Request[IO]): IO[Response[IO]] =
     authed(req)(s => activity.unread(s.user.id).flatMap(Ok(_)))
 
-  private def postNotificationsRead(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def postNotificationsRead(req: Request[IO]): IO[Response[IO]] =
     authed(req)(s => body[MarkReadReq](req)(r => activity.markRead(s.user.id, r.ids) *> NoContent()))
 
-  private def postNotificationsReadAll(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def postNotificationsReadAll(req: Request[IO]): IO[Response[IO]] =
     authed(req)(s =>
       activity.markAllRead(s.user.id, param(req, "kinds").toList.flatMap(_.split(',').toList)) *> NoContent()
     )

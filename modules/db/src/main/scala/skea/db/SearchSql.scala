@@ -20,15 +20,9 @@ object SearchSql {
   /** タイプミスを許容する度合い（バイグラムの2文字の語で1文字違いまで）。 */
   val FuzzyRatio = 0.5
 
-  def values(
-    v: String
-  ): List[String] = v.split(',').toList.map(_.trim).filter(_.nonEmpty)
+  def values(v: String): List[String] = v.split(',').toList.map(_.trim).filter(_.nonEmpty)
 
-  def userMatch(
-    col: Fragment,
-    v: String,
-    me: UUID
-  ): Fragment =
+  def userMatch(col: Fragment, v: String, me: UUID): Fragment =
     Sql.or(values(v).map {
       case "me" | "自分" | "currentuser()" => col ++ fr"= $me"
       case "none" | "なし" | "empty" => col ++ fr"is null"
@@ -40,12 +34,7 @@ object SearchSql {
         }
     })
 
-  def dateCol(
-    col: Fragment,
-    op: Op,
-    v: String,
-    today: LocalDate
-  ): Either[String, Fragment] =
+  def dateCol(col: Fragment, op: Op, v: String, today: LocalDate): Either[String, Fragment] =
     if v == "none" || v == "なし" then Right(col ++ fr"is null")
     else
       SearchQuery.date(v, today).toRight(s"日付として読めません: $v").map { d =>
@@ -72,49 +61,31 @@ object SearchSql {
     "完了" -> StatusCategory.Done
   )
 
-  def category(
-    v: String
-  ): Either[String, Fragment] =
+  def category(v: String): Either[String, Fragment] =
     values(v).traverse(x =>
       if x == "open" then Right("open")
       else categoryAlias.get(x.toLowerCase).toRight(s"カテゴリは todo / in_progress / waiting / done です: $x")
     )
       .map(cs => Sql.or(cs.map(c => if c == "open" then fr"s.category <> 'done'" else fr"s.category = $c")))
 
-  def status(
-    v: String
-  ): Fragment = Sql.or(values(v).map(x => uuidOpt(x).fold(fr"lower(s.name) = lower($x)")(id => fr"s.id = $id")))
+  def status(v: String): Fragment =
+    Sql.or(values(v).map(x => uuidOpt(x).fold(fr"lower(s.name) = lower($x)")(id => fr"s.id = $id")))
 
-  def key(
-    v: String
-  ): Fragment = fr"t.key = any(${values(v).map(_.toUpperCase).toArray})"
+  def key(v: String): Fragment = fr"t.key = any(${values(v).map(_.toUpperCase).toArray})"
 
-  private def commentScope(
-    publicOnly: Boolean
-  ): Fragment =
+  private def commentScope(publicOnly: Boolean): Fragment =
     if publicOnly then fr"c.deleted_at is null and not c.internal" else fr"c.deleted_at is null"
 
-  def commented(
-    v: String,
-    me: UUID,
-    publicOnly: Boolean
-  ): Fragment =
+  def commented(v: String, me: UUID, publicOnly: Boolean): Fragment =
     fr"exists(select 1 from comment c where c.task_id = t.id and" ++ commentScope(publicOnly) ++ fr"and" ++
       userMatch(fr"c.author_id", v, me) ++ fr")"
 
-  def comment(
-    v: String,
-    publicOnly: Boolean
-  ): Fragment =
+  def comment(v: String, publicOnly: Boolean): Fragment =
     fr"exists(select 1 from comment c where c.task_id = t.id and" ++ commentScope(publicOnly) ++
       fr"and c.body_text &@~ ${SearchQuery.phrase(v)})"
 
   /** 全文検索（タスクの key・タイトル・説明と、コメントをそれぞれのインデックスで探す. OR で1つの条件にするとインデックスが使われない）。 */
-  def textCond(
-    text: String,
-    fuzzy: Boolean,
-    publicOnly: Boolean
-  ): Fragment = {
+  def textCond(text: String, fuzzy: Boolean, publicOnly: Boolean): Fragment = {
     val ratio = if fuzzy then FuzzyRatio else 0.0
     fr"""t.id in (select x.id from task x where array[x.key, x.title, x.description_text] &@~
                    pgroonga_condition($text, index_name => 'task_search_idx', fuzzy_max_distance_ratio => $ratio::real)
@@ -123,9 +94,7 @@ object SearchSql {
                    pgroonga_condition($text, index_name => 'comment_search_idx', fuzzy_max_distance_ratio => $ratio::real))"""
   }
 
-  def orderCol(
-    k: String
-  ): Fragment = k match {
+  def orderCol(k: String): Fragment = k match {
     case "due" => fr"t.due_date"
     case "start" => fr"t.start_date"
     case "created" => fr"t.created_at"

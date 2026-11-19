@@ -14,9 +14,7 @@ import java.util.UUID
  */
 class AgentAccountSpec extends ApiDbSuite {
 
-  private def keyReq(
-    scopes: List[String]
-  ): Json = CreateApiKeyReq("skakapo", scopes, None, Some(30)).asJson
+  private def keyReq(scopes: List[String]): Json = CreateApiKeyReq("skakapo", scopes, None, Some(30)).asJson
 
   withEnv("管理者がエージェント専用アカウントを作り、そのキーで MCP・REST を使える。失効・無効化で使えなくなり、ログインはできない") { env =>
     for {

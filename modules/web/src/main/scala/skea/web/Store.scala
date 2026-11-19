@@ -10,11 +10,7 @@ import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
 import scala.scalajs.js
 import scala.util.{Failure, Success}
 
-final case class Toast(
-  id: Int,
-  text: String,
-  link: Option[String],
-  error: Boolean)
+final case class Toast(id: Int, text: String, link: Option[String], error: Boolean)
 
 /** 画面全体で共有する状態と、変更の自動同期（SSE で知らせを受けて取りに行く. つながらないときは15秒ごと）. */
 object Store {
@@ -65,34 +61,22 @@ object Store {
 
   // ---------------------------------------------------------------- トースト
 
-  def toast(
-    text: String,
-    link: Option[String] = None,
-    error: Boolean = false
-  ): Unit = {
+  def toast(text: String, link: Option[String] = None, error: Boolean = false): Unit = {
     toastSeq += 1
     val t = Toast(toastSeq, text, link, error)
     toasts := (toasts.v :+ t).takeRight(5)
     dom.window.setTimeout(() => dismiss(t.id), if (error) 9000 else 6000)
   }
 
-  def dismiss(
-    id: Int
-  ): Unit = toasts := toasts.v.filterNot(_.id == id)
+  def dismiss(id: Int): Unit = toasts := toasts.v.filterNot(_.id == id)
 
-  def error(
-    e: Throwable
-  ): Unit = e match {
+  def error(e: Throwable): Unit = e match {
     case ApiError(401, _) => ()
     case other => toast(other.getMessage, error = true)
   }
 
   /** Future の失敗をトーストで知らせる. */
-  def report[A](
-    f: Future[A]
-  )(
-    ok: A => Unit
-  ): Unit = f.onComplete {
+  def report[A](f: Future[A])(ok: A => Unit): Unit = f.onComplete {
     case Success(a) => ok(a)
     case Failure(e) => error(e)
   }
@@ -104,29 +88,20 @@ object Store {
   /** プロジェクトと窓口を読み、"ユーザ"としてだけ参加しているかを決める. */
   def loadAll(): Future[Boolean] =
     loadProjects().zip(Api.helpProjects().recover(_ => Nil)).map {
-      (
-        ps,
-        hs
-      ) =>
+      (ps, hs) =>
         helpProjects := hs
         helpOnly := ps.isEmpty && hs.nonEmpty && !me.v.exists(_.isAdmin)
         helpOnly.v
     }
 
   /** 通知などからタスクを開くときの画面（エージェントならタスクの画面、"ユーザ"なら窓口の画面）. */
-  def taskLink(
-    projectKey: Option[String],
-    key: String,
-    commentId: Option[UUID] = None
-  ): String = {
+  def taskLink(projectKey: Option[String], key: String, commentId: Option[UUID] = None): String = {
     val agent = projectKey.forall(pk => projects.v.exists(_.key == pk))
     (if (agent) s"/tasks/$key" else s"/help/t/$key") + commentId.fold("")(c => s"#comment-$c")
   }
 
   /** プロジェクトを表示する（設定を読み、変更の監視を始める）. */
-  def openProject(
-    key: String
-  ): Future[ProjectMetaDto] =
+  def openProject(key: String): Future[ProjectMetaDto] =
     meta.v.filter(_.project.key == key) match {
       case Some(m) => Future.successful(m)
       case None =>
@@ -152,9 +127,7 @@ object Store {
   }
 
   /** まとめてメンションできるグループ・役割. */
-  def mentionGroups(
-    pid: UUID
-  ): Future[List[MentionGroupDto]] =
+  def mentionGroups(pid: UUID): Future[List[MentionGroupDto]] =
     groupCache.get(pid) match {
       case Some(a) => Future.successful(a)
       case None => Api.get[List[MentionGroupDto]](s"/api/projects/$pid/mention-groups").map { a =>
@@ -162,9 +135,7 @@ object Store {
         }
     }
 
-  def audience(
-    pid: UUID
-  ): Future[List[UserBrief]] =
+  def audience(pid: UUID): Future[List[UserBrief]] =
     audienceCache.get(pid) match {
       case Some(a) => Future.successful(a)
       case None => Api.audience(pid).map { a => audienceCache = audienceCache.updated(pid, a); a }
@@ -173,13 +144,9 @@ object Store {
   // ---------------------------------------------------------------- 自動同期
 
   /** 「山田 さんが SKEA-1 を作成しました」. */
-  def describe(
-    e: EventDto
-  ): String = s"${actorName(e)} さんが ${EventText.describe(e.kind, e.detail, e.taskKey)}"
+  def describe(e: EventDto): String = s"${actorName(e)} さんが ${EventText.describe(e.kind, e.detail, e.taskKey)}"
 
-  def actorName(
-    e: EventDto
-  ): String =
+  def actorName(e: EventDto): String =
     e.actor.map(_.name).getOrElse(if (e.via == "scm") e.detail.hcursor.get[String]("author").getOrElse("リポジトリ")
     else "skea")
 
@@ -254,18 +221,11 @@ object Store {
 object Dom {
 
   /** 入力欄（input・select・textarea）の値. */
-  def value(
-    e: dom.Event
-  ): String = e.target.asInstanceOf[js.Dynamic].value.asInstanceOf[String]
+  def value(e: dom.Event): String = e.target.asInstanceOf[js.Dynamic].value.asInstanceOf[String]
 
-  def checked(
-    e: dom.Event
-  ): Boolean = e.target.asInstanceOf[dom.HTMLInputElement].checked
+  def checked(e: dom.Event): Boolean = e.target.asInstanceOf[dom.HTMLInputElement].checked
 
-  def copy(
-    text: String,
-    message: String = "コピーしました"
-  ): Unit = {
+  def copy(text: String, message: String = "コピーしました"): Unit = {
     dom.window.navigator.clipboard.writeText(text)
     Store.toast(message)
   }
@@ -275,18 +235,9 @@ object Dom {
 /** 表示の補助. */
 object Fmt {
 
-  private def opts(
-    o: (String, String)*
-  ): js.Dynamic = js.Dynamic.literal(o.map(
-    (
-      k,
-      v
-    ) => k -> (v: js.Any)
-  )*)
+  private def opts(o: (String, String)*): js.Dynamic = js.Dynamic.literal(o.map((k, v) => k -> (v: js.Any))*)
 
-  def dateTime(
-    t: Timestamp
-  ): String =
+  def dateTime(t: Timestamp): String =
     t.toDate.asInstanceOf[js.Dynamic].toLocaleString(
       "ja-JP",
       opts(
@@ -299,9 +250,7 @@ object Fmt {
     ).asInstanceOf[String]
 
   /** 「3分前」「昨日」など. */
-  def ago(
-    t: Timestamp
-  ): String = {
+  def ago(t: Timestamp): String = {
     val diff = (js.Date.now() - t.toEpochMilli) / 1000
     if (diff < 60) "たった今"
     else if (diff < 3600) s"${(diff / 60).toInt}分前"
@@ -311,9 +260,7 @@ object Fmt {
   }
 
   /** 2026-11-15 → 11/15(日). */
-  def day(
-    d: String
-  ): String = {
+  def day(d: String): String = {
     val dt = new js.Date(d + "T00:00:00")
     val w = "日月火水木金土".charAt(dt.getDay().toInt)
     s"${dt.getMonth().toInt + 1}/${dt.getDate().toInt}($w)"
@@ -324,62 +271,41 @@ object Fmt {
   /** 今の時刻（13:05）. */
   def clock(): String = { val d = new js.Date(); f"${d.getHours().toInt}%02d:${d.getMinutes().toInt}%02d" }
 
-  def isoDate(
-    d: js.Date
-  ): String = f"${d.getFullYear().toInt}%04d-${d.getMonth().toInt + 1}%02d-${d.getDate().toInt}%02d"
+  def isoDate(d: js.Date): String =
+    f"${d.getFullYear().toInt}%04d-${d.getMonth().toInt + 1}%02d-${d.getDate().toInt}%02d"
 
-  def addDays(
-    d: String,
-    n: Int
-  ): String = {
+  def addDays(d: String, n: Int): String = {
     val dt = new js.Date(d + "T00:00:00")
     dt.setDate(dt.getDate() + n)
     isoDate(dt)
   }
 
   /** 外部の URL を href に入れるときの確認（http(s) 以外は無効にする）. */
-  def href(
-    u: String
-  ): String = {
+  def href(u: String): String = {
     val t = u.trim; if (t.toLowerCase.startsWith("https://") || t.toLowerCase.startsWith("http://")) t else "#"
   }
 
   /** from から to まで何日か（yyyy-MM-dd. to が前なら負）. */
-  def daysBetween(
-    from: String,
-    to: String
-  ): Int =
+  def daysBetween(from: String, to: String): Int =
     math.round((new js.Date(to + "T00:00:00").getTime() - new js.Date(from + "T00:00:00").getTime()) / 86400000).toInt
 
-  def isOverdue(
-    due: Option[String],
-    done: Boolean
-  ): Boolean = !done && due.exists(_ < today())
+  def isOverdue(due: Option[String], done: Boolean): Boolean = !done && due.exists(_ < today())
 
-  def initials(
-    name: String
-  ): String = name.trim.take(1)
+  def initials(name: String): String = name.trim.take(1)
 
-  def bytes(
-    n: Long
-  ): String =
+  def bytes(n: Long): String =
     if (n < 1024) s"$n B" else if (n < 1024 * 1024) f"${n / 1024.0}%.1f KB" else f"${n / 1024.0 / 1024.0}%.1f MB"
 
-  def statusName(
-    m: Option[ProjectMetaDto],
-    id: UUID
-  ): String = m.flatMap(_.statuses.find(_.id == id)).map(_.name).getOrElse("")
+  def statusName(m: Option[ProjectMetaDto], id: UUID): String =
+    m.flatMap(_.statuses.find(_.id == id)).map(_.name).getOrElse("")
 
-  def statusCat(
-    m: Option[ProjectMetaDto],
-    id: UUID
-  ): String = m.flatMap(_.statuses.find(_.id == id)).map(_.category).getOrElse("")
+  def statusCat(m: Option[ProjectMetaDto], id: UUID): String =
+    m.flatMap(_.statuses.find(_.id == id)).map(_.category).getOrElse("")
 
 }
 
 /** ドラッグ中の一覧の行: タスクか、落とす位置の空き（gap）. */
-final case class DndRow(
-  task: Option[TaskDto]) {
+final case class DndRow(task: Option[TaskDto]) {
   def key: String = task.map(_.id.toString).getOrElse("gap")
   def id: String = task.map(_.id.toString).getOrElse("")
 }
@@ -391,10 +317,7 @@ final case class DndRow(
  */
 object Dnd {
 
-  final case class Drag(
-    id: UUID,
-    zone: String,
-    height: Double)
+  final case class Drag(id: UUID, zone: String, height: Double)
 
   val drag: RV[Option[Drag]] = RV(None)
 
@@ -405,12 +328,7 @@ object Dnd {
   val target: RV[Option[(String, Option[UUID])]] = RV(None)
   private var droppedAt = 0.0
 
-  def start(
-    t: TaskDto,
-    zone: String,
-    list: List[TaskDto],
-    e: dom.Event
-  ): Unit = {
+  def start(t: TaskDto, zone: String, list: List[TaskDto], e: dom.Event): Unit = {
     val de = e.asInstanceOf[dom.DragEvent]
     de.dataTransfer.setData("text/plain", t.key)
     de.dataTransfer.effectAllowed = dom.DataTransferEffectAllowedKind.move
@@ -424,10 +342,7 @@ object Dnd {
   }
 
   /** 区分の一覧の行（落とす位置に空きを入れる）. computed の中で呼ぶこと. */
-  def rows(
-    zone: String,
-    list: List[TaskDto]
-  ): List[DndRow] = {
+  def rows(zone: String, list: List[TaskDto]): List[DndRow] = {
     val base = list.map(t => DndRow(Some(t)))
     (target.v, hidden.v) match {
       case (Some((z, before)), Some(_)) if z == zone =>
@@ -438,10 +353,7 @@ object Dnd {
   }
 
   /** 区分の上を通るとき: ポインタより下にある最初のカードの前を落とす位置にする. */
-  def over(
-    zone: String,
-    e: dom.Event
-  ): Unit = drag.v.foreach { d =>
+  def over(zone: String, e: dom.Event): Unit = drag.v.foreach { d =>
     e.preventDefault()
     val y = e.asInstanceOf[dom.DragEvent].clientY
     val cards = e.currentTarget.asInstanceOf[dom.Element].querySelectorAll("[data-task]").toList
@@ -456,11 +368,7 @@ object Dnd {
   }
 
   /** 落としたとき: (タスク, 後ろに来るタスク, 前に来るタスク). list は落とした区分のタスク. */
-  def drop(
-    zone: String,
-    list: List[TaskDto],
-    e: dom.Event
-  ): Option[(UUID, Option[UUID], Option[UUID])] = {
+  def drop(zone: String, list: List[TaskDto], e: dom.Event): Option[(UUID, Option[UUID], Option[UUID])] = {
     e.preventDefault()
     val r = for {
       d <- drag.v
@@ -481,31 +389,20 @@ object Dnd {
   /** 落とした直後のクリックは無視する（ドラッグをクリックとして扱わない）. */
   def recentlyDropped: Boolean = js.Date.now() - droppedAt < 400
 
-  def cls(
-    r: DndRow
-  ) = r.task match {
+  def cls(r: DndRow) = r.task match {
     case None => hidden.mapC(_ => "dnd-gap")
     case Some(t) => hidden.mapC(h => if (h.contains(t.id)) "dnd-item dnd-src" else "dnd-item")
   }
 
-  def zoneClass(
-    zone: String,
-    base: String
-  ) = target.mapC(t => if (t.exists(_._1 == zone)) s"$base over" else base)
+  def zoneClass(zone: String, base: String) = target.mapC(t => if (t.exists(_._1 == zone)) s"$base over" else base)
 
-  def gapStyle(
-    r: DndRow
-  ): String = if (r.task.isEmpty) s"height: ${drag.v.map(_.height).getOrElse(40.0)}px" else ""
+  def gapStyle(r: DndRow): String = if (r.task.isEmpty) s"height: ${drag.v.map(_.height).getOrElse(40.0)}px" else ""
 
   /** 画面の一覧の中でタスクを動かす（サーバーの応答を待たずに表示を変える）. */
-  def reinsert(
-    tasks: List[TaskDto],
-    id: UUID,
-    after: Option[UUID],
-    before: Option[UUID]
-  )(
-    update: TaskDto => TaskDto
-  ): List[TaskDto] = {
+  def reinsert(tasks: List[TaskDto],
+               id: UUID,
+               after: Option[UUID],
+               before: Option[UUID])(update: TaskDto => TaskDto): List[TaskDto] = {
     val moved = tasks.find(_.id == id).map(update)
     val rest = tasks.filterNot(_.id == id)
     val idx = before.map(b => rest.indexWhere(_.id == b)).filter(_ >= 0).getOrElse(after.map(a =>
@@ -523,16 +420,11 @@ object Flip {
     dom.document.querySelectorAll("[data-task]").toList.map(_.asInstanceOf[dom.HTMLElement])
       .filter(_.getAttribute("data-task").nonEmpty).map(e => e.getAttribute("data-task") -> e).toMap
 
-  def animate(
-    change: => Unit
-  ): Unit = {
+  def animate(change: => Unit): Unit = {
     val before = cards().view.mapValues(_.getBoundingClientRect()).toMap
     change
     cards().foreach {
-      (
-        k,
-        el
-      ) =>
+      (k, el) =>
         before.get(k).filter(_.width > 0).foreach { r0 =>
           val r1 = el.getBoundingClientRect()
           val dx = r0.left - r1.left
@@ -552,53 +444,34 @@ object Flip {
 }
 
 /** 画面内のダイアログ（ブラウザ標準の confirm・prompt・alert の代わり）. 表示は parts/DialogHost.st. */
-final case class DialogReq(
-  message: String,
-  okLabel: String,
-  danger: Boolean,
-  input: Option[RV[String]],
-  choices: List[(String, String)],
-  cancel: Boolean,
-  onOk: String => Unit,
-  onCancel: () => Unit)
+final case class DialogReq(message: String,
+                           okLabel: String,
+                           danger: Boolean,
+                           input: Option[RV[String]],
+                           choices: List[(String, String)],
+                           cancel: Boolean,
+                           onOk: String => Unit,
+                           onCancel: () => Unit)
 
 object Dialog {
 
   val current: RV[Option[DialogReq]] = RV(None)
 
-  private def open(
-    r: DialogReq
-  ): Unit = current := Some(r)
+  private def open(r: DialogReq): Unit = current := Some(r)
 
   /** 確認（OK を押したら f）. */
-  def confirm(
-    message: String,
-    ok: String = "OK",
-    danger: Boolean = true
-  )(
-    f: => Unit
-  ): Unit =
+  def confirm(message: String, ok: String = "OK", danger: Boolean = true)(f: => Unit): Unit =
     open(DialogReq(message, ok, danger, None, Nil, cancel = true, _ => f, () => ()))
 
   /** 文字の入力（OK を押したら入力した値で f）. */
-  def prompt(
-    message: String,
-    default: String = "",
-    ok: String = "OK"
-  )(
-    f: String => Unit
-  ): Unit =
+  def prompt(message: String, default: String = "", ok: String = "OK")(f: String => Unit): Unit =
     open(DialogReq(message, ok, danger = false, Some(RV(default)), Nil, cancel = true, f, () => ()))
 
   /** 選択肢から選ぶ（choices は 値 → 表示名）. */
-  def choose(
-    message: String,
-    choices: List[(String, String)],
-    ok: String = "OK",
-    danger: Boolean = false
-  )(
-    f: String => Unit
-  ): Unit =
+  def choose(message: String,
+             choices: List[(String, String)],
+             ok: String = "OK",
+             danger: Boolean = false)(f: String => Unit): Unit =
     open(DialogReq(
       message,
       ok,
@@ -610,37 +483,27 @@ object Dialog {
       () => ()
     ))
 
-  def alert(
-    message: String
-  ): Unit = open(DialogReq(message, "OK", danger = false, None, Nil, cancel = false, _ => (), () => ()))
+  def alert(message: String): Unit =
+    open(DialogReq(message, "OK", danger = false, None, Nil, cancel = false, _ => (), () => ()))
 
-  def close(
-    ok: Boolean
-  ): Unit = current.v.foreach { r =>
+  def close(ok: Boolean): Unit = current.v.foreach { r =>
     current := None
     if (ok) r.onOk(r.input.map(_.v).getOrElse("")) else r.onCancel()
   }
 
   /** 文字の入力（エディタ用）. OK なら入力した値、キャンセルなら null の Promise. */
-  def promptJs(
-    message: String,
-    default: String
-  ): js.Promise[js.Any] =
-    new js.Promise[js.Any](
-      (
-        resolve,
-        _
-      ) =>
-        open(DialogReq(
-          message,
-          "OK",
-          danger = false,
-          Some(RV(Option(default).getOrElse(""))),
-          Nil,
-          cancel = true,
-          v => resolve(v),
-          () => resolve(null)
-        ))
+  def promptJs(message: String, default: String): js.Promise[js.Any] =
+    new js.Promise[js.Any]((resolve, _) =>
+      open(DialogReq(
+        message,
+        "OK",
+        danger = false,
+        Some(RV(Option(default).getOrElse(""))),
+        Nil,
+        cancel = true,
+        v => resolve(v),
+        () => resolve(null)
+      ))
     )
 
 }
@@ -648,16 +511,10 @@ object Dialog {
 /** この端末だけの表示の設定（localStorage. 使えないときは既定値）. */
 object Prefs {
 
-  def get(
-    key: String,
-    default: String
-  ): String =
+  def get(key: String, default: String): String =
     scala.util.Try(Option(dom.window.localStorage.getItem("skea." + key))).toOption.flatten.getOrElse(default)
 
-  def set(
-    key: String,
-    value: String
-  ): Unit = scala.util.Try(dom.window.localStorage.setItem("skea." + key, value))
+  def set(key: String, value: String): Unit = scala.util.Try(dom.window.localStorage.setItem("skea." + key, value))
 
 }
 
@@ -679,26 +536,16 @@ object TouchDnd {
   private var scroller: Option[Int] = None
   private var suppressClickUntil = 0.0
 
-  private def drag(
-    kind: String,
-    target: dom.EventTarget,
-    x: Double,
-    y: Double
-  ): Unit = {
+  private def drag(kind: String, target: dom.EventTarget, x: Double, y: Double): Unit = {
     val init = js.Dynamic.literal(bubbles = true, cancelable = true, dataTransfer = dt, clientX = x, clientY = y)
     target.dispatchEvent(js.Dynamic.newInstance(js.Dynamic.global.DragEvent)(kind, init).asInstanceOf[dom.Event])
   }
 
-  private def under(
-    x: Double,
-    y: Double
-  ): Option[dom.Element] = Option(dom.document.elementFromPoint(x, y))
+  private def under(x: Double, y: Double): Option[dom.Element] = Option(dom.document.elementFromPoint(x, y))
 
   private def cancelTimer(): Unit = { timer.foreach(dom.window.clearTimeout); timer = None }
 
-  private def begin(
-    el: dom.HTMLElement
-  ): Unit = {
+  private def begin(el: dom.HTMLElement): Unit = {
     dt = js.Dynamic.newInstance(js.Dynamic.global.DataTransfer)()
     val r = el.getBoundingClientRect()
     offset = (start._1 - r.left, start._2 - r.top)
@@ -726,9 +573,7 @@ object TouchDnd {
       under(x, y).flatMap(e => Option(e.closest(".board, .cols"))).foreach(b => b.scrollLeft = b.scrollLeft + vx)
   }
 
-  private def finish(
-    drop: Boolean
-  ): Unit = {
+  private def finish(drop: Boolean): Unit = {
     cancelTimer()
     scroller.foreach(dom.window.clearInterval); scroller = None
     ghost.foreach(_.remove()); ghost = None
@@ -800,43 +645,27 @@ object Theme {
     if (current.v == "system") el.removeAttribute("data-theme") else el.setAttribute("data-theme", current.v)
   }
 
-  def set(
-    v: String
-  ): Unit = { current := v; Prefs.set("theme", v); apply() }
+  def set(v: String): Unit = { current := v; Prefs.set("theme", v); apply() }
 
   val options: List[(String, String)] = List("system" -> "🖥 自動（OS に合わせる）", "light" -> "☀️ ライト", "dark" -> "🌙 ダーク")
 
 }
 
 /** オートコンプリート（parts/Combo.st）の選択肢. icon は前に付ける文字、user はアイコン、color はラベルの色. */
-final case class Opt(
-  value: String,
-  label: String,
-  icon: String = "",
-  user: Option[UserBrief] = None,
-  color: String = "",
-  hint: String = "")
+final case class Opt(value: String,
+                     label: String,
+                     icon: String = "",
+                     user: Option[UserBrief] = None,
+                     color: String = "",
+                     hint: String = "")
 
 object Opt {
-  def users(
-    us: List[UserBrief]
-  ): List[Opt] = us.map(u => Opt(u.id.toString, u.name, user = Some(u)))
-  def of(
-    xs: List[(String, String)]
-  ): List[Opt] = xs.map(
-    (
-      v,
-      l
-    ) => Opt(v, l)
-  )
+  def users(us: List[UserBrief]): List[Opt] = us.map(u => Opt(u.id.toString, u.name, user = Some(u)))
+  def of(xs: List[(String, String)]): List[Opt] = xs.map((v, l) => Opt(v, l))
 
   /** 値と表示が同じ選択肢. */
-  def names(
-    xs: List[String]
-  ): List[Opt] = xs.map(x => Opt(x, x))
-  def statuses(
-    ss: List[StatusDto]
-  ): List[Opt] = ss.map(s => Opt(s.id.toString, s.name, color = s.color))
+  def names(xs: List[String]): List[Opt] = xs.map(x => Opt(x, x))
+  def statuses(ss: List[StatusDto]): List[Opt] = ss.map(s => Opt(s.id.toString, s.name, color = s.color))
   val priorities: List[Opt] = Priority.all.map(p => Opt(p, Priority.label(p), Priority.icon(p)))
   val types: List[Opt] = TaskType.all.map(t => Opt(t, TaskType.label(t), TaskType.icon(t)))
 }
@@ -847,16 +676,12 @@ object Emojis {
   val custom: RV[List[CustomEmojiDto]] = RV(Nil)
   private var loaded = false
 
-  def load(
-    force: Boolean = false
-  ): Unit = if (!loaded || force) {
+  def load(force: Boolean = false): Unit = if (!loaded || force) {
     loaded = true
     Api.get[List[CustomEmojiDto]]("/api/emoji").foreach(custom := _)
   }
 
   /** ":name:" ならカスタム絵文字の画像の URL. */
-  def image(
-    e: String
-  ): Option[String] = Reactions.customName(e).map(CustomEmoji.url)
+  def image(e: String): Option[String] = Reactions.customName(e).map(CustomEmoji.url)
 
 }

@@ -13,21 +13,12 @@ import skea.shared.*
 import java.util.UUID
 
 /** 変更が起きたときの共通処理: 変更履歴（画面の同期）・Webhook・自動化の起動。 */
-final class EventHub(
-  tasks: TaskStore,
-  projects: ProjectStore,
-  integ: IntegrationStore) {
+final class EventHub(tasks: TaskStore, projects: ProjectStore, integ: IntegrationStore) {
 
   /** 自動化の連鎖の上限。 */
   val MaxDepth = 5
 
-  def emit(
-    op: Op,
-    projectId: UUID,
-    taskId: Option[UUID],
-    kind: String,
-    detail: Json
-  ): IO[Long] =
+  def emit(op: Op, projectId: UUID, taskId: Option[UUID], kind: String, detail: Json): IO[Long] =
     for {
       id <- tasks.event(projectId, taskId, Some(op.userId), op.via, kind, detail)
       _ <- fanOut(op, projectId, taskId, kind, detail).handleErrorWith(e =>
@@ -36,12 +27,7 @@ final class EventHub(
     } yield id
 
   /** タスクに付くもの（リンク・依存関係・添付）が変わった（task.updated。changes に field を入れる）。 */
-  def touched(
-    op: Op,
-    t: TaskCore,
-    field: String,
-    extra: (String, Json)*
-  ): IO[Unit] =
+  def touched(op: Op, t: TaskCore, field: String, extra: (String, Json)*): IO[Unit] =
     emit(
       op,
       t.projectId,
@@ -51,36 +37,22 @@ final class EventHub(
     ).void
 
   /** システムの操作（SCM など、操作者のいないもの）。 */
-  def emitSystem(
-    projectId: UUID,
-    taskId: Option[UUID],
-    via: String,
-    kind: String,
-    detail: Json
-  ): IO[Long] =
+  def emitSystem(projectId: UUID, taskId: Option[UUID], via: String, kind: String, detail: Json): IO[Long] =
     tasks.event(projectId, taskId, None, via, kind, detail).flatTap(_ =>
       fanOut(None, projectId, taskId, kind, detail, 0).handleErrorWith(e =>
         Log.report(ErrorCode.EventFanoutFailed, kind, e)
       )
     )
 
-  private def fanOut(
-    op: Op,
-    projectId: UUID,
-    taskId: Option[UUID],
-    kind: String,
-    detail: Json
-  ): IO[Unit] =
+  private def fanOut(op: Op, projectId: UUID, taskId: Option[UUID], kind: String, detail: Json): IO[Unit] =
     fanOut(Some(op.s.user), projectId, taskId, kind, detail, op.depth)
 
-  private def fanOut(
-    actor: Option[User],
-    projectId: UUID,
-    taskId: Option[UUID],
-    kind: String,
-    detail: Json,
-    depth: Int
-  ): IO[Unit] =
+  private def fanOut(actor: Option[User],
+                     projectId: UUID,
+                     taskId: Option[UUID],
+                     kind: String,
+                     detail: Json,
+                     depth: Int): IO[Unit] =
     for {
       p <- projects.find(projectId)
       task <- taskId.flatTraverse(tasks.dto)
@@ -99,35 +71,24 @@ final class EventHub(
 object EventHub {
 
   /** Webhook で送る本文（自動化にも渡す）。 */
-  def payload(
-    kind: String,
-    p: Option[Project],
-    task: Option[TaskDto],
-    actor: Option[(UUID, String)],
-    detail: Json,
-    at: java.time.Instant = java.time.Instant.now()
-  ): Json =
+  def payload(kind: String,
+              p: Option[Project],
+              task: Option[TaskDto],
+              actor: Option[(UUID, String)],
+              detail: Json,
+              at: java.time.Instant = java.time.Instant.now()): Json =
     Json.obj(
       "event" -> kind.asJson,
       "project" ->
         p.fold(Json.Null)(x => Json.obj("id" -> x.id.asJson, "key" -> x.key.asJson, "name" -> x.name.asJson)),
       "task" -> task.asJson,
-      "actor" -> actor.fold(Json.Null)(
-        (
-          id,
-          name
-        ) => Json.obj("id" -> id.asJson, "name" -> name.asJson)
-      ),
+      "actor" -> actor.fold(Json.Null)((id, name) => Json.obj("id" -> id.asJson, "name" -> name.asJson)),
       "detail" -> detail,
       "at" -> at.asJson
     )
 
   /** Webhook の本文の見本（設定画面で表示する）。値は架空のもの。 */
-  def sample(
-    kind: String,
-    p: Project,
-    actor: (UUID, String)
-  ): Json = {
+  def sample(kind: String, p: Project, actor: (UUID, String)): Json = {
     val now = java.time.Instant.now()
     val tid = UUID.fromString("00000000-0000-4000-8000-000000000001")
     val st = UUID.fromString("00000000-0000-4000-8000-000000000002")

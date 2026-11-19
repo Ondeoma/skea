@@ -16,13 +16,12 @@ import cats.syntax.all.*
 import java.time.Instant
 
 /** ログイン（OIDC・開発用）・ログアウト。 */
-final class AuthRoutes(
-  oidc: Option[OidcClient],
-  users: UserStore,
-  activity: ActivityStore,
-  val sessions: SessionAuth,
-  val access: Access2,
-  cfg: ApiConfig) extends RouteSupport {
+final class AuthRoutes(oidc: Option[OidcClient],
+                       users: UserStore,
+                       activity: ActivityStore,
+                       val sessions: SessionAuth,
+                       val access: Access2,
+                       cfg: ApiConfig) extends RouteSupport {
 
   val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
     case req @ GET -> Root / "auth" / "login" => getAuthLogin(req)
@@ -33,24 +32,16 @@ final class AuthRoutes(
   }
 
   /** ログイン後に戻る先（同じサイトのパスだけ）。 */
-  private def safeReturn(
-    s: Option[String]
-  ): String =
+  private def safeReturn(s: Option[String]): String =
     s.filter(p => p.startsWith("/") && !p.startsWith("//") && !p.startsWith("/\\")).getOrElse("/")
 
-  private def redirect(
-    to: String,
-    cookie: Option[ResponseCookie] = None
-  ): IO[Response[IO]] = {
+  private def redirect(to: String, cookie: Option[ResponseCookie] = None): IO[Response[IO]] = {
     val r = Response[IO](Status.Found).putHeaders(Location(Uri.unsafeFromString(to)))
     IO.pure(cookie.fold(r)(r.addCookie))
   }
 
   private val StateCookie = "skea_login_state"
-  private def stateCookie(
-    v: String,
-    maxAge: Long
-  ): ResponseCookie =
+  private def stateCookie(v: String, maxAge: Long): ResponseCookie =
     ResponseCookie(
       StateCookie,
       v,
@@ -61,19 +52,13 @@ final class AuthRoutes(
       sameSite = Some(SameSite.Lax)
     )
 
-  private def loggedIn(
-    u: User,
-    via: String,
-    idToken: Option[String] = None
-  ): IO[ResponseCookie] =
+  private def loggedIn(u: User, via: String, idToken: Option[String] = None): IO[ResponseCookie] =
     sessions.issue(u, idToken).flatTap(_ =>
       activity.audit(Some(u.id), via, "auth.login", None, Json.obj()) *>
         sbirds.observe.Metrics.count("skea.logins", "via" -> via)
     )
 
-  private def getAuthLogin(
-    req: Request[IO]
-  ): IO[Response[IO]] = {
+  private def getAuthLogin(req: Request[IO]): IO[Response[IO]] = {
     val back = safeReturn(param(req, "returnTo"))
     oidc match {
       case Some(o) =>
@@ -87,9 +72,7 @@ final class AuthRoutes(
     }
   }
 
-  private def getAuthCallback(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def getAuthCallback(req: Request[IO]): IO[Response[IO]] =
     (oidc, param(req, "code"), param(req, "state")) match {
       case (Some(_), Some(_), Some(state))
           if !req.cookies.find(_.name == StateCookie).exists(c => Crypto.constantTimeEquals(c.content, state)) =>
@@ -124,22 +107,15 @@ final class AuthRoutes(
       case _ => err(ErrorCode.LoginCodeStateRequired)
     }
 
-  private def postAuthLogout(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def postAuthLogout(req: Request[IO]): IO[Response[IO]] =
     sessions.revoke(req).flatMap {
-      (
-        idToken,
-        c
-      ) =>
+      (idToken, c) =>
         oidc.flatTraverse(_.logoutUri(idToken, s"${cfg.publicUrl.stripSuffix("/")}/")).flatMap { idp =>
           Ok(Json.obj("redirect" -> idp.fold("/")(_.renderString).asJson)).map(_.addCookie(c))
         }
     }
 
-  private def postAuthDevLogin(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def postAuthDevLogin(req: Request[IO]): IO[Response[IO]] =
     body[Json](req) { j =>
       val c = j.hcursor
       val name = c.get[String]("name").getOrElse("").trim

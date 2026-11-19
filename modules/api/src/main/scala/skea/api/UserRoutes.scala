@@ -19,14 +19,13 @@ import java.time.Instant
 import java.util.UUID
 
 /** 自分の情報・APIキー・通知の設定、ユーザーの一覧、管理画面（ユーザー・エージェント専用アカウント・監査ログ）。 */
-final class UserRoutes(
-  users: UserStore,
-  projects: ProjectStore,
-  activity: ActivityStore,
-  blobs: Option[BlobStore],
-  emoji: EmojiStore,
-  val sessions: SessionAuth,
-  val access: Access2) extends RouteSupport {
+final class UserRoutes(users: UserStore,
+                       projects: ProjectStore,
+                       activity: ActivityStore,
+                       blobs: Option[BlobStore],
+                       emoji: EmojiStore,
+                       val sessions: SessionAuth,
+                       val access: Access2) extends RouteSupport {
 
   val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
     case req @ GET -> Root / "api" / "me" => getMe(req)
@@ -59,17 +58,12 @@ final class UserRoutes(
   private val avatarMaxBytes = 2L * 1024 * 1024
 
   /** アイコンを差し替える（前の画像は消す）。 */
-  private def replaceAvatar(
-    uid: UUID,
-    key: Option[String]
-  ): IO[Unit] = {
+  private def replaceAvatar(uid: UUID, key: Option[String]): IO[Unit] = {
     val url = key.map(_ => s"/api/users/$uid/avatar?v=${Crypto.randomToken(6)}")
     users.setAvatar(uid, key, url).flatMap(_.traverse_(old => blobs.traverse_(_.delete(old).handleError(_ => ()))))
   }
 
-  private def me(
-    s: AuthSession
-  ): MeDto =
+  private def me(s: AuthSession): MeDto =
     MeDto(
       s.user.id,
       s.user.name,
@@ -85,13 +79,9 @@ final class UserRoutes(
    * APIキーを発行する（個人設定の自分のキー・管理画面のエージェント専用アカウントのキーで共通）。owner はキーの持ち主。
    * adminDenied: admin スコープを求められたときに返す応答（None なら許す）。平文のキーはこの応答でだけ返す。
    */
-  private def issueKey(
-    owner: AuthSession,
-    r: CreateApiKeyReq,
-    adminDenied: Option[IO[Response[IO]]]
-  )(
-    audit: ApiKeyDto => IO[Unit]
-  ): IO[Response[IO]] = {
+  private def issueKey(owner: AuthSession,
+                       r: CreateApiKeyReq,
+                       adminDenied: Option[IO[Response[IO]]])(audit: ApiKeyDto => IO[Unit]): IO[Response[IO]] = {
     val scopes = r.scopes.map(_.trim.toLowerCase).distinct
     if r.name.trim.isEmpty then err(ErrorCode.NameRequired)
     else if scopes.isEmpty || !scopes.forall(ApiScope.all.contains) then
@@ -112,37 +102,20 @@ final class UserRoutes(
   }
 
   /** 管理画面のエージェント専用アカウントの操作（管理者・画面からのみ。APIキーでは管理できない）。 */
-  private def agentAdmin(
-    req: Request[IO]
-  )(
-    f: AuthSession => IO[Response[IO]]
-  ): IO[Response[IO]] =
+  private def agentAdmin(req: Request[IO])(f: AuthSession => IO[Response[IO]]): IO[Response[IO]] =
     admin(req)(s => if s.isSession then f(s) else err(ErrorCode.SessionOnly))
 
   /** id がエージェント専用アカウントのときだけ処理する（ほかのユーザーは 404）。 */
-  private def withAgent(
-    id: UUID
-  )(
-    f: => IO[Response[IO]]
-  ): IO[Response[IO]] =
+  private def withAgent(id: UUID)(f: => IO[Response[IO]]): IO[Response[IO]] =
     users.isAgent(id).ifM(f, err(ErrorCode.AgentAccountNotFound))
 
-  private def agentAudit(
-    s: AuthSession,
-    action: String,
-    target: UUID,
-    detail: Json
-  ): IO[Unit] =
+  private def agentAudit(s: AuthSession, action: String, target: UUID, detail: Json): IO[Unit] =
     activity.audit(Some(s.user.id), s.viaString, action, Some(target.toString), detail)
 
-  private def getMe(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def getMe(req: Request[IO]): IO[Response[IO]] =
     authed(req)(s => sessions.appNames(req).flatMap(n => Ok(me(s).copy(appNames = n))))
 
-  private def patchMe(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def patchMe(req: Request[IO]): IO[Response[IO]] =
     authed(req)(s =>
       body[UpdateMeReq](req)(r =>
         if r.timezone.exists(tz => scala.util.Try(java.time.ZoneId.of(tz)).isFailure) then
@@ -151,24 +124,16 @@ final class UserRoutes(
       )
     )
 
-  private def getMeNotifyPrefs(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def getMeNotifyPrefs(req: Request[IO]): IO[Response[IO]] =
     authed(req)(s => users.notifyPrefs(s.user.id).flatMap(Ok(_)))
 
-  private def putMeNotifyPrefs(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def putMeNotifyPrefs(req: Request[IO]): IO[Response[IO]] =
     authed(req)(s => body[List[NotifyPrefDto]](req)(ps => users.setNotifyPrefs(s.user.id, ps) *> NoContent()))
 
-  private def getMeApiKeys(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def getMeApiKeys(req: Request[IO]): IO[Response[IO]] =
     sessionOnly(req)(s => users.keys(s.user.id).flatMap(Ok(_)))
 
-  private def postMeApiKeys(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def postMeApiKeys(req: Request[IO]): IO[Response[IO]] =
     sessionOnly(req)(s =>
       body[CreateApiKeyReq](req)(r =>
         issueKey(s, r, Option.when(!s.isAdmin)(err(ErrorCode.ApiKeyAdminScopeAdminOnly)))(info =>
@@ -183,10 +148,7 @@ final class UserRoutes(
       )
     )
 
-  private def deleteMeApiKey(
-    req: Request[IO],
-    id: UUID
-  ): IO[Response[IO]] =
+  private def deleteMeApiKey(req: Request[IO], id: UUID): IO[Response[IO]] =
     sessionOnly(req)(s =>
       users.revokeKey(s.user.id, id).flatMap {
         case true => activity.audit(Some(s.user.id), "web", "api_key.revoke", Some(id.toString), Json.obj()) *>
@@ -195,9 +157,7 @@ final class UserRoutes(
       }
     )
 
-  private def postMeAvatar(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def postMeAvatar(req: Request[IO]): IO[Response[IO]] =
     sessionOnly(req)(s =>
       blobs match {
         case None => err(ErrorCode.ImageStorageNotConfigured)
@@ -213,15 +173,10 @@ final class UserRoutes(
       }
     )
 
-  private def deleteMeAvatar(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def deleteMeAvatar(req: Request[IO]): IO[Response[IO]] =
     sessionOnly(req)(s => replaceAvatar(s.user.id, None) *> NoContent())
 
-  private def getUserAvatar(
-    req: Request[IO],
-    id: UUID
-  ): IO[Response[IO]] =
+  private def getUserAvatar(req: Request[IO], id: UUID): IO[Response[IO]] =
     authed(req)(_ =>
       (users.avatarKey(id), IO.pure(blobs)).tupled.flatMap {
         case (Some(key), Some(store)) => store.get(key).flatMap {
@@ -241,14 +196,10 @@ final class UserRoutes(
       }
     )
 
-  private def getEmoji(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def getEmoji(req: Request[IO]): IO[Response[IO]] =
     authed(req)(_ => emoji.list.flatMap(Ok(_)))
 
-  private def postEmoji(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def postEmoji(req: Request[IO]): IO[Response[IO]] =
     sessionOnly(req)(s =>
       (blobs, param(req, "name").map(_.toLowerCase)) match {
         case (None, _) => err(ErrorCode.ImageStorageNotConfigured)
@@ -270,10 +221,7 @@ final class UserRoutes(
       }
     )
 
-  private def deleteEmoji(
-    req: Request[IO],
-    name: String
-  ): IO[Response[IO]] =
+  private def deleteEmoji(req: Request[IO], name: String): IO[Response[IO]] =
     sessionOnly(req)(s =>
       emoji.find(name).flatMap {
         case None => err(ErrorCode.EmojiNotFound)
@@ -282,10 +230,7 @@ final class UserRoutes(
       }
     )
 
-  private def getEmojiImage(
-    req: Request[IO],
-    name: String
-  ): IO[Response[IO]] =
+  private def getEmojiImage(req: Request[IO], name: String): IO[Response[IO]] =
     authed(req)(_ =>
       (emoji.find(name), IO.pure(blobs)).tupled.flatMap {
         case (Some(e), Some(store)) => store.get(e.s3Key).flatMap {
@@ -303,24 +248,17 @@ final class UserRoutes(
       }
     )
 
-  private def getUsers(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def getUsers(req: Request[IO]): IO[Response[IO]] =
     authed(req)(_ =>
       users.list(param(req, "q"), includeDisabled = false, intParam(req, "limit", 50, 500)).flatMap(us =>
         Ok(us.map(u => UserBrief(u.id, u.name, u.avatarUrl)))
       )
     )
 
-  private def getAdminUsers(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def getAdminUsers(req: Request[IO]): IO[Response[IO]] =
     admin(req)(_ => users.list(param(req, "q"), includeDisabled = true, 2000).flatMap(Ok(_)))
 
-  private def patchAdminUser(
-    req: Request[IO],
-    id: UUID
-  ): IO[Response[IO]] =
+  private def patchAdminUser(req: Request[IO], id: UUID): IO[Response[IO]] =
     admin(req)(s =>
       body[UpdateUserReq](req) { r =>
         if id == s.user.id && (r.isAdmin.contains(false) || r.disabled.contains(true)) then
@@ -334,14 +272,10 @@ final class UserRoutes(
       }
     )
 
-  private def getAdminAgents(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def getAdminAgents(req: Request[IO]): IO[Response[IO]] =
     agentAdmin(req)(_ => users.agents.flatMap(Ok(_)))
 
-  private def postAdminAgents(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def postAdminAgents(req: Request[IO]): IO[Response[IO]] =
     agentAdmin(req)(s =>
       body[CreateAgentReq](req)(r =>
         AgentAccounts.validName(r.name) match {
@@ -358,10 +292,7 @@ final class UserRoutes(
       )
     )
 
-  private def patchAdminAgent(
-    req: Request[IO],
-    id: UUID
-  ): IO[Response[IO]] =
+  private def patchAdminAgent(req: Request[IO], id: UUID): IO[Response[IO]] =
     agentAdmin(req)(s =>
       body[UpdateAgentReq](req)(r =>
         r.name.traverse(AgentAccounts.validName) match {
@@ -374,10 +305,7 @@ final class UserRoutes(
       )
     )
 
-  private def postAdminAgentKeys(
-    req: Request[IO],
-    id: UUID
-  ): IO[Response[IO]] =
+  private def postAdminAgentKeys(req: Request[IO], id: UUID): IO[Response[IO]] =
     agentAdmin(req)(s =>
       withAgent(id)(body[CreateApiKeyReq](req)(r =>
         sessions.sessionFor(id).flatMap {
@@ -395,11 +323,7 @@ final class UserRoutes(
       ))
     )
 
-  private def deleteAdminAgentKey(
-    req: Request[IO],
-    id: UUID,
-    kid: UUID
-  ): IO[Response[IO]] =
+  private def deleteAdminAgentKey(req: Request[IO], id: UUID, kid: UUID): IO[Response[IO]] =
     agentAdmin(req)(s =>
       withAgent(id)(users.revokeKey(id, kid).flatMap {
         case true => agentAudit(s, "agent.key.revoke", id, Json.obj("key" -> kid.asJson)) *> NoContent()
@@ -407,9 +331,7 @@ final class UserRoutes(
       })
     )
 
-  private def getAdminAudit(
-    req: Request[IO]
-  ): IO[Response[IO]] =
+  private def getAdminAudit(req: Request[IO]): IO[Response[IO]] =
     admin(req)(_ =>
       activity.auditLog(
         param(req, "before").flatMap(_.toLongOption),

@@ -20,19 +20,11 @@ import java.time.LocalDate
 import java.util.UUID
 
 /** タスクの検索（絞り込み構文 + PGroonga の全文検索）。 */
-final class SearchStore(
-  xa: Transactor[IO],
-  tasks: TaskStore) extends TxStore(xa) {
+final class SearchStore(xa: Transactor[IO], tasks: TaskStore) extends TxStore(xa) {
 
-  final case class Ctx(
-    userId: UUID,
-    projectIds: List[UUID],
-    today: LocalDate)
+  final case class Ctx(userId: UUID, projectIds: List[UUID], today: LocalDate)
 
-  private def filterSql(
-    f: Filter,
-    ctx: Ctx
-  ): Either[String, Fragment] = {
+  private def filterSql(f: Filter, ctx: Ctx): Either[String, Fragment] = {
     val v = f.value
     val res: Either[String, Fragment] = f.key match {
       case "project" =>
@@ -63,12 +55,8 @@ final class SearchStore(
           Priority.parse(x).toRight(s"優先度は ${Priority.all.mkString(" / ")} です: $x")
         ).map { ps =>
           val ranks = ps.map(Priority.rank)
-          def atLeast(
-            r: Int
-          ) = Priority.all.filter(p => Priority.rank(p) >= r)
-          def atMost(
-            r: Int
-          ) = Priority.all.filter(p => Priority.rank(p) <= r)
+          def atLeast(r: Int) = Priority.all.filter(p => Priority.rank(p) >= r)
+          def atMost(r: Int) = Priority.all.filter(p => Priority.rank(p) <= r)
           val set = f.op match {
             case SearchQuery.Op.Ge => atLeast(ranks.min)
             case SearchQuery.Op.Gt => atLeast(ranks.min + 1)
@@ -143,45 +131,28 @@ final class SearchStore(
     res.map(fr => if f.negate then fr"not (" ++ fr ++ fr")" else fr)
   }
 
-  private def orderSql(
-    order: List[(String, Boolean)],
-    hasText: Boolean,
-    text: String
-  ): Fragment = {
-    val parts = order.map(
-      (
-        k,
-        asc
-      ) =>
-        (if k == "key" then fr"p.key, t.number" else SearchSql.orderCol(k)) ++
-          (if asc then fr"asc nulls last" else fr"desc nulls last")
+  private def orderSql(order: List[(String, Boolean)], hasText: Boolean, text: String): Fragment = {
+    val parts = order.map((k, asc) =>
+      (if k == "key" then fr"p.key, t.number" else SearchSql.orderCol(k)) ++
+        (if asc then fr"asc nulls last" else fr"desc nulls last")
     )
     val rel = if hasText then List(fr"(t.title &@~ $text) desc") else Nil
     fr"order by" ++ Sql.commas(parts ++ rel ++ List(fr"t.updated_at desc", fr"t.id"))
   }
 
   /** 検索する。exact で見つかった件数が少なければ、タイプミスを許容した一致（fuzzy）を下に足す。 */
-  def search(
-    q: SearchQuery.Query,
-    ctx: Ctx,
-    limit: Int,
-    offset: Int
-  ): IO[Either[String, SearchResultDto]] =
+  def search(q: SearchQuery.Query, ctx: Ctx, limit: Int, offset: Int): IO[Either[String, SearchResultDto]] =
     q.filters.traverse(filterSql(_, ctx)) match {
       case Left(e) => IO.pure(Left(e))
       case Right(fs) =>
         val text = q.text.map(SearchQuery.phrase).mkString(" ")
         val negs = q.negText.map(w => fr"not (array[t.key, t.title, t.description_text] &@~ ${SearchQuery.phrase(w)})")
         val hasText = q.text.nonEmpty
-        def textCond(
-          fuzzy: Boolean
-        ): Fragment = SearchSql.textCond(text, fuzzy, publicOnly = false)
-        def run(
-          fuzzy: Boolean,
-          exclude: List[UUID],
-          lim: Int,
-          off: Int
-        ): ConnectionIO[List[(UUID, String, Option[String], Long)]] = {
+        def textCond(fuzzy: Boolean): Fragment = SearchSql.textCond(text, fuzzy, publicOnly = false)
+        def run(fuzzy: Boolean,
+                exclude: List[UUID],
+                lim: Int,
+                off: Int): ConnectionIO[List[(UUID, String, Option[String], Long)]] = {
           val where = List(
             Some(fr"t.deleted_at is null"),
             Some(fr"t.project_id = any(${ctx.projectIds.toArray})"),
@@ -225,63 +196,40 @@ final class SearchStore(
 
   // ---------------------------------------------------------------- 保存した検索条件
 
-  def savedFilters(
-    userId: UUID
-  ): IO[List[SavedFilterDto]] = tx(
+  def savedFilters(userId: UUID): IO[List[SavedFilterDto]] = tx(
     sql"select id, name, query from saved_filter where user_id = $userId order by name".query[SavedFilterDto].to[List]
   )
 
-  def saveFilter(
-    userId: UUID,
-    name: String,
-    query: String
-  ): IO[SavedFilterDto] = tx {
+  def saveFilter(userId: UUID, name: String, query: String): IO[SavedFilterDto] = tx {
     val id = UUID.randomUUID()
     sql"insert into saved_filter (id, user_id, name, query) values ($id, $userId, $name, $query)".update.run.as(
       SavedFilterDto(id, name, query)
     )
   }
 
-  def deleteFilter(
-    userId: UUID,
-    id: UUID
-  ): IO[Unit] = tx(sql"delete from saved_filter where id = $id and user_id = $userId".update.run.void)
+  def deleteFilter(userId: UUID, id: UUID): IO[Unit] =
+    tx(sql"delete from saved_filter where id = $id and user_id = $userId".update.run.void)
 
   // ---------------------------------------------------------------- ボードの絞り込み条件
 
   /** プロジェクトで共有しているものと、自分のもの（共有を先に、名前の順）。 */
-  def boardFilters(
-    projectId: UUID,
-    userId: UUID
-  ): IO[List[BoardFilterDto]] = tx(
+  def boardFilters(projectId: UUID, userId: UUID): IO[List[BoardFilterDto]] = tx(
     sql"""select id, name, cond, user_id is null, created_by = $userId from board_filter
           where project_id = $projectId and (user_id is null or user_id = $userId) order by user_id is not null, name"""
       .query[(UUID, String, Json, Boolean, Option[Boolean])].to[List]
-  ).map(_.map(
-    (
-      id,
-      n,
-      c,
-      sh,
-      mine
-    ) => BoardFilterDto(id, n, c.as[BoardCond].getOrElse(BoardCond()), sh, mine.getOrElse(false) || !sh)
+  ).map(_.map((id, n, c, sh, mine) =>
+    BoardFilterDto(id, n, c.as[BoardCond].getOrElse(BoardCond()), sh, mine.getOrElse(false) || !sh)
   ))
 
   /** 1件（プロジェクト・持ち主（共有なら None）・作った人）。 */
-  def boardFilter(
-    id: UUID
-  ): IO[Option[(UUID, Option[UUID], Option[UUID])]] =
+  def boardFilter(id: UUID): IO[Option[(UUID, Option[UUID], Option[UUID])]] =
     tx(sql"select project_id, user_id, created_by from board_filter where id = $id".query[(
       UUID,
       Option[UUID],
       Option[UUID]
     )].option)
 
-  def saveBoardFilter(
-    projectId: UUID,
-    userId: UUID,
-    r: BoardFilterReq
-  ): IO[Either[AppError, BoardFilterDto]] = tx {
+  def saveBoardFilter(projectId: UUID, userId: UUID, r: BoardFilterReq): IO[Either[AppError, BoardFilterDto]] = tx {
     val id = UUID.randomUUID()
     val owner = Option.unless(r.shared)(userId)
     sql"""insert into board_filter (id, project_id, user_id, name, cond, created_by)
@@ -292,7 +240,5 @@ final class SearchStore(
       })
   }
 
-  def deleteBoardFilter(
-    id: UUID
-  ): IO[Unit] = tx(sql"delete from board_filter where id = $id".update.run.void)
+  def deleteBoardFilter(id: UUID): IO[Unit] = tx(sql"delete from board_filter where id = $id".update.run.void)
 }

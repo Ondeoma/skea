@@ -15,19 +15,14 @@ object RichText {
   val empty: Json = Json.obj("type" -> Json.fromString("doc"), "content" -> Json.arr())
 
   /** 平文から文書を作る（API・自動化・メールの本文など）。空行で段落を分け、行の区切りは改行にする。 */
-  def fromPlain(
-    text: String
-  ): Json = {
+  def fromPlain(text: String): Json = {
     val paras = text.replace("\r\n", "\n").split("\n\n").toList.filter(_.trim.nonEmpty)
     Json.obj(
       "type" -> Json.fromString("doc"),
       "content" -> Json.fromValues(paras.map { p =>
         val lines = p.split("\n").toList
         val inl = lines.zipWithIndex.flatMap {
-          (
-            l,
-            i
-          ) =>
+          (l, i) =>
             {
               val t = if l.isEmpty then Nil
               else List(Json.obj("type" -> Json.fromString("text"), "text" -> Json.fromString(l)))
@@ -40,20 +35,12 @@ object RichText {
   }
 
   /** Markdown 風の簡単な入力（API・MCP 向け）。見出し(#)・箇条書き(-, *)・番号付き(1.)・引用(>)・コード(```)だけ解釈する。 */
-  def fromMarkdown(
-    md: String
-  ): Json = {
+  def fromMarkdown(md: String): Json = {
     val lines = md.replace("\r\n", "\n").split("\n", -1).toList
     val blocks = List.newBuilder[Json]
-    def text(
-      s: String
-    ): List[Json] = inlines(s)
-    def para(
-      s: String
-    ) = Json.obj("type" -> Json.fromString("paragraph"), "content" -> Json.fromValues(text(s)))
-    def item(
-      s: String
-    ) = Json.obj("type" -> Json.fromString("listItem"), "content" -> Json.arr(para(s)))
+    def text(s: String): List[Json] = inlines(s)
+    def para(s: String) = Json.obj("type" -> Json.fromString("paragraph"), "content" -> Json.fromValues(text(s)))
+    def item(s: String) = Json.obj("type" -> Json.fromString("listItem"), "content" -> Json.arr(para(s)))
     var rest = lines
     while rest.nonEmpty do {
       val l = rest.head
@@ -120,11 +107,8 @@ object RichText {
         blocks += Json.obj(
           "type" -> Json.fromString("paragraph"),
           "content" -> Json.fromValues(
-            ps.zipWithIndex.flatMap(
-              (
-                x,
-                i
-              ) => text(x) ++ (if i < ps.size - 1 then List(Json.obj("type" -> Json.fromString("hardBreak"))) else Nil)
+            ps.zipWithIndex.flatMap((x, i) =>
+              text(x) ++ (if i < ps.size - 1 then List(Json.obj("type" -> Json.fromString("hardBreak"))) else Nil)
             )
           )
         )
@@ -137,22 +121,15 @@ object RichText {
   /**
    * **太字**・*斜体*・`コード`・[文字](URL) だけ解釈する。
    */
-  private def inlines(
-    s: String
-  ): List[Json] = {
+  private def inlines(s: String): List[Json] = {
     val re = """(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)\s]+\)|\*[^*]+\*)""".r
     val out = List.newBuilder[Json]
     var pos = 0
-    def plain(
-      t: String,
-      marks: List[Json] = Nil
-    ) =
+    def plain(t: String, marks: List[Json] = Nil) =
       if t.nonEmpty then
         out += Json.obj(("type" -> Json.fromString("text")) :: ("text" -> Json.fromString(t)) ::
           (if marks.isEmpty then Nil else List("marks" -> Json.fromValues(marks)))*)
-    def mark(
-      t: String
-    ) = Json.obj("type" -> Json.fromString(t))
+    def mark(t: String) = Json.obj("type" -> Json.fromString(t))
     re.findAllMatchIn(s).foreach { m =>
       plain(s.substring(pos, m.start))
       val x = m.matched
@@ -175,29 +152,19 @@ object RichText {
   // ------------------------------------------------------------------ HTML
 
   /** 許可した要素だけから HTML を組み立てる。 */
-  def toHtml(
-    doc: Json
-  ): String = {
+  def toHtml(doc: Json): String = {
     val b = new StringBuilder
     nodes(doc.hcursor).foreach(n => node(n, b))
     b.toString
   }
 
-  private def nodes(
-    c: ACursor
-  ): List[Json] = c.downField("content").focus.flatMap(_.asArray).map(_.toList).getOrElse(Nil)
-  private def tpe(
-    n: Json
-  ): String = n.hcursor.get[String]("type").getOrElse("")
-  private def attr(
-    n: Json,
-    k: String
-  ): ACursor = n.hcursor.downField("attrs").downField(k)
+  private def nodes(c: ACursor): List[Json] =
+    c.downField("content").focus.flatMap(_.asArray).map(_.toList).getOrElse(Nil)
+  private def tpe(n: Json): String = n.hcursor.get[String]("type").getOrElse("")
+  private def attr(n: Json, k: String): ACursor = n.hcursor.downField("attrs").downField(k)
 
   /** リンクに使える URL（http(s)・mailto・相対パス）。 */
-  def safeUrl(
-    u: String
-  ): Option[String] = {
+  def safeUrl(u: String): Option[String] = {
     val t = u.trim
     val l = t.toLowerCase
     if l.startsWith("http://") || l.startsWith("https://") || l.startsWith("mailto:") ||
@@ -206,17 +173,9 @@ object RichText {
     else None
   }
 
-  private def children(
-    n: Json,
-    b: StringBuilder
-  ): Unit = nodes(n.hcursor).foreach(node(_, b))
+  private def children(n: Json, b: StringBuilder): Unit = nodes(n.hcursor).foreach(node(_, b))
 
-  private def wrap(
-    tag: String,
-    n: Json,
-    b: StringBuilder,
-    attrs: String = ""
-  ): Unit = {
+  private def wrap(tag: String, n: Json, b: StringBuilder, attrs: String = ""): Unit = {
     b.append('<').append(tag).append(attrs).append('>')
     children(n, b)
     b.append("</").append(tag).append('>')
@@ -225,19 +184,14 @@ object RichText {
   /** 表のセルの背景色（色名だけを許す。実際の色は CSS で決める）。 */
   val cellColors: Set[String] = Set("gray", "brown", "orange", "yellow", "green", "blue", "purple", "pink", "red")
 
-  private def cellAttrs(
-    n: Json
-  ): String = {
+  private def cellAttrs(n: Json): String = {
     val cs = attr(n, "colspan").as[Int].toOption.filter(_ > 1).fold("")(v => s""" colspan="$v"""")
     val rs = attr(n, "rowspan").as[Int].toOption.filter(_ > 1).fold("")(v => s""" rowspan="$v"""")
     val bg = attr(n, "backgroundColor").as[String].toOption.filter(cellColors).fold("")(c => s""" data-bg="$c"""")
     cs + rs + bg
   }
 
-  private def node(
-    n: Json,
-    b: StringBuilder
-  ): Unit = tpe(n) match {
+  private def node(n: Json, b: StringBuilder): Unit = tpe(n) match {
     case "doc" => children(n, b)
     case "paragraph" => wrap("p", n, b)
     case "heading" =>
@@ -297,10 +251,7 @@ object RichText {
     case _ => children(n, b) // 知らないノードは中身だけ出す
   }
 
-  private def text(
-    n: Json,
-    b: StringBuilder
-  ): Unit = {
+  private def text(n: Json, b: StringBuilder): Unit = {
     val t = Html.escape(n.hcursor.get[String]("text").getOrElse(""))
     val marks = n.hcursor.downField("marks").focus.flatMap(_.asArray).map(_.toList).getOrElse(Nil)
     val (open, close) = marks.foldLeft((List.empty[String], List.empty[String])) { case ((o, c), m) =>
@@ -328,13 +279,9 @@ object RichText {
   // ------------------------------------------------------------------ 平文・メンション
 
   /** 検索用の平文（ブロックの区切りは改行）。 */
-  def toPlain(
-    doc: Json
-  ): String = plainBlocks(doc).trim
+  def toPlain(doc: Json): String = plainBlocks(doc).trim
 
-  private def plainOf(
-    n: Json
-  ): String =
+  private def plainOf(n: Json): String =
     tpe(n) match {
       case "text" => n.hcursor.get[String]("text").getOrElse("")
       case "hardBreak" => "\n"
@@ -356,9 +303,7 @@ object RichText {
     "tableHeader"
   )
 
-  private def plainBlocks(
-    n: Json
-  ): String = {
+  private def plainBlocks(n: Json): String = {
     val t = tpe(n)
     if t == "text" || t == "hardBreak" || t == "mention" || t == "image" || t == "taskMention" then plainOf(n)
     else {
@@ -368,46 +313,33 @@ object RichText {
   }
 
   /** 文書に含まれるメンション（ユーザーID）。 */
-  def mentions(
-    doc: Json
-  ): Set[UUID] = {
-    def go(
-      n: Json
-    ): List[UUID] =
+  def mentions(doc: Json): Set[UUID] = {
+    def go(n: Json): List[UUID] =
       (if tpe(n) == "mention" then attr(n, "id").as[String].toOption.flatMap(uuidOpt).toList else Nil) ++
         nodes(n.hcursor).flatMap(go)
     go(doc).toSet
   }
 
   /** まとめてのメンションの宛先（"g:<グループID>"・"r:admin"・"r:edit"・"r:all"）。 */
-  def isGroupKey(
-    k: String
-  ): Boolean = (k.startsWith("g:") && uuidOpt(k.drop(2)).isDefined) || Set("r:admin", "r:edit", "r:all").contains(k)
+  def isGroupKey(k: String): Boolean =
+    (k.startsWith("g:") && uuidOpt(k.drop(2)).isDefined) || Set("r:admin", "r:edit", "r:all").contains(k)
 
   /** 文書に含まれる、まとめてのメンション。 */
-  def groupMentions(
-    doc: Json
-  ): Set[String] = {
-    def go(
-      n: Json
-    ): List[String] =
+  def groupMentions(doc: Json): Set[String] = {
+    def go(n: Json): List[String] =
       (if tpe(n) == "mention" then attr(n, "id").as[String].toOption.filter(isGroupKey).toList else Nil) ++
         nodes(n.hcursor).flatMap(go)
     go(doc).toSet
   }
 
   /** 文書として最低限の形か（type が doc）。 */
-  def valid(
-    doc: Json
-  ): Boolean = tpe(doc) == "doc" && depth(doc) <= MaxDepth
+  def valid(doc: Json): Boolean = tpe(doc) == "doc" && depth(doc) <= MaxDepth
 
   /** 入れ子の深さの上限（再帰で処理するため、深すぎる文書は受け付けない）。 */
   val MaxDepth = 120
 
   /** JSON の入れ子の深さ（再帰を使わずに数える）。 */
-  def depth(
-    j: Json
-  ): Int = {
+  def depth(j: Json): Int = {
     var max = 0
     var stack: List[(Json, Int)] = List(j -> 1)
     while stack.nonEmpty do {
@@ -423,12 +355,8 @@ object RichText {
   }
 
   /** 本文が空か（文字・画像・メンションがない）。 */
-  def isBlank(
-    doc: Json
-  ): Boolean = {
-    def go(
-      n: Json
-    ): Boolean = tpe(n) match {
+  def isBlank(doc: Json): Boolean = {
+    def go(n: Json): Boolean = tpe(n) match {
       case "text" => n.hcursor.get[String]("text").getOrElse("").trim.isEmpty
       case "image" | "mention" | "horizontalRule" | "table" | "taskMention" => false
       case _ => nodes(n.hcursor).forall(go)

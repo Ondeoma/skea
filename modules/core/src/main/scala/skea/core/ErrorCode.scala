@@ -5,10 +5,7 @@ package skea.core
  * 1xxx: 認証・共通, 2xxx: タスク, 3xxx: プロジェクト, 4xxx: ヘルプデスク, 5xxx: 外部との連携, 6xxx: 検索・テンプレート,
  * 7xxx: ユーザー, 9xxx: サーバー内部・バックグラウンドの処理.
  */
-enum ErrorCode(
-  val code: String,
-  val status: Int,
-  val message: String) extends sbirds.shared.ErrorCode {
+enum ErrorCode(val code: String, val status: Int, val message: String) extends sbirds.shared.ErrorCode {
   case ApiKeyReadOnly extends ErrorCode("SKEA-1001", 403, "このAPIキーは参照専用です")
   case ApiKeyNeedsWrite extends ErrorCode("SKEA-1002", 403, "このAPIキーは参照専用です（write スコープが必要です）")
   case OidcNotConfigured extends ErrorCode("SKEA-1003", 503, "OIDC が設定されていません")
