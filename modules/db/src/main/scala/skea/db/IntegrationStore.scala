@@ -12,8 +12,11 @@ import skea.shared.*
 import java.time.Instant
 import java.util.UUID
 
-final case class WebhookRow(id: UUID, projectId: UUID, name: String, url: String, secret: String, events: List[String], enabled: Boolean)
-final case class DeliveryRow(id: UUID, webhookId: UUID, url: String, secret: String, event: String, payload: Json, attempts: Int)
+final case class WebhookRow(id: UUID, projectId: UUID, name: String, url: String, secret: String, events: List[String], enabled: Boolean,
+    kind: String, ownerId: Option[UUID], channelId: Option[String], channelName: Option[String], stuiHookId: Option[String])
+/** kind が stui なら、ownerId の stui との連携で channelId に投稿する（url・secret は使わない）。stui_hook なら url（stui の受信 Webhook）に送る。 */
+final case class DeliveryRow(id: UUID, webhookId: UUID, url: String, secret: String, event: String, payload: Json, attempts: Int,
+    kind: String = WebhookKind.Url, ownerId: Option[UUID] = None, channelId: Option[String] = None)
 
 final case class RuleRow(id: UUID, projectId: UUID, name: String, enabled: Boolean, trigger: Json, actions: Json, runAs: Option[UUID],
     createdBy: Option[UUID], incomingToken: Option[String], lastRunAt: Option[Instant], createdAt: Instant)
@@ -27,20 +30,24 @@ final class IntegrationStore(xa: Transactor[IO]) extends TxStore(xa):
 
   // ---------------------------------------------------------------- Webhook
 
-  private val hookCols = fr"select id, project_id, name, url, secret, events, enabled from webhook"
+  private val hookCols = fr"select id, project_id, name, url, secret, events, enabled, kind, owner_id, channel_id, channel_name, stui_hook_id from webhook"
 
   def webhooks(projectId: UUID): IO[List[WebhookRow]] = tx((hookCols ++ fr"where project_id = $projectId order by name").query[WebhookRow].to[List])
 
   def webhook(id: UUID): IO[Option[WebhookRow]] = tx((hookCols ++ fr"where id = $id").query[WebhookRow].option)
 
-  def createWebhook(projectId: UUID, r: WebhookReq, secret: String): IO[UUID] = tx {
+  /** owner は stui のチャンネルに投稿するときの、連携を使う人（保存した人）。hookId は stui に作った受信 Webhook の ID。 */
+  def createWebhook(projectId: UUID, r: WebhookReq, secret: String, owner: Option[UUID], hookId: Option[String] = None): IO[UUID] = tx {
     val id = UUID.randomUUID()
-    sql"""insert into webhook (id, project_id, name, url, secret, events, enabled)
-          values ($id, $projectId, ${r.name}, ${r.url}, $secret, ${r.events.toArray}, ${r.enabled})""".update.run.as(id)
+    sql"""insert into webhook (id, project_id, name, url, secret, events, enabled, kind, owner_id, channel_id, channel_name, stui_hook_id)
+          values ($id, $projectId, ${r.name}, ${r.url}, $secret, ${r.events.toArray}, ${r.enabled}, ${r.kind.getOrElse(WebhookKind.Url)},
+                  $owner, ${r.channelId}, ${r.channelName}, $hookId)""".update.run.as(id)
   }
 
-  def updateWebhook(id: UUID, r: WebhookReq): IO[Unit] = tx(
-    sql"update webhook set name = ${r.name}, url = ${r.url}, events = ${r.events.toArray}, enabled = ${r.enabled} where id = $id".update.run.void
+  def updateWebhook(id: UUID, r: WebhookReq, owner: Option[UUID], hookId: Option[String] = None): IO[Unit] = tx(
+    sql"""update webhook set name = ${r.name}, url = ${r.url}, events = ${r.events.toArray}, enabled = ${r.enabled},
+          kind = ${r.kind.getOrElse(WebhookKind.Url)}, owner_id = $owner, channel_id = ${r.channelId}, channel_name = ${r.channelName},
+          stui_hook_id = $hookId where id = $id""".update.run.void
   )
 
   def deleteWebhook(id: UUID): IO[Unit] = tx(sql"delete from webhook where id = $id".update.run.void)
@@ -59,7 +66,7 @@ final class IntegrationStore(xa: Transactor[IO]) extends TxStore(xa):
 
   def processDeliveries(batch: Int)(send: DeliveryRow => IO[(OutboxResult, Option[Int])]): IO[Int] =
     processEach(
-      sql"""select d.id, d.webhook_id, w.url, w.secret, d.event, d.payload, d.attempts from webhook_delivery d join webhook w on w.id = d.webhook_id
+      sql"""select d.id, d.webhook_id, w.url, w.secret, d.event, d.payload, d.attempts, w.kind, w.owner_id, w.channel_id from webhook_delivery d join webhook w on w.id = d.webhook_id
             where d.done_at is null and not d.failed and d.not_before <= now() order by d.not_before limit $batch for update of d skip locked"""
         .query[DeliveryRow].to[List]
     )(d => send(d).handleError(e => (OutboxResult.Retry(e.getMessage), None))) {

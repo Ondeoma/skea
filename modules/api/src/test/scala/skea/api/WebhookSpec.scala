@@ -5,7 +5,7 @@ import munit.CatsEffectSuite
 /** Webhook の送信の要求（本文と署名）。要求を組み立てるだけなので、ほかの依存は渡さない。 */
 class WebhookSpec extends CatsEffectSuite:
 
-  private val svc = new WebhookService(null, null, null)
+  private val svc = new WebhookService(null, null, null, null)
 
   test("送る本文は payload そのもので、署名もその本文で合う（JSON の文字列にしない）") {
     val payload = io.circe.parser.parse("""{"event":"message.created","text":"改行\nと\"引用符\""}""").toOption.get

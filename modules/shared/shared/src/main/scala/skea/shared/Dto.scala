@@ -587,9 +587,28 @@ final case class BoardFilterReq(name: String, cond: BoardCond, shared: Boolean) 
 
 // ------------------------------------------------------------------ Webhook
 
-final case class WebhookDto(id: UUID, name: String, url: String, secret: String, events: List[String], enabled: Boolean)
+/**
+ * 送信先の種類: url（JSON を POST する Webhook）・stui（stui のチャンネルに投稿する. 設定した人の stui との連携で送る）・
+ * stui_hook（チャンネルの管理者が、連携を使って stui に作った受信 Webhook に送る. 作った人が連携を外しても届く）.
+ */
+object WebhookKind {
+  val Url = "url"
+  val Stui = "stui"
+  val StuiHook = "stui_hook"
+  val all: List[String] = List(Url, Stui, StuiHook)
+  def isStui(k: String): Boolean = k == Stui || k == StuiHook
+}
+
+/** kind が stui のときは url・secret を使わず、channelId（と表示用の channelName）に owner の連携で投稿する. */
+final case class WebhookDto(id: UUID, name: String, url: String, secret: String, events: List[String], enabled: Boolean,
+    kind: String = WebhookKind.Url, channelId: Option[String] = None, channelName: Option[String] = None, owner: Option[UserBrief] = None)
     derives Encoder.AsObject, Decoder
-final case class WebhookReq(name: String, url: String, events: List[String], enabled: Boolean) derives Encoder.AsObject, Decoder
+final case class WebhookReq(name: String, url: String, events: List[String], enabled: Boolean,
+    kind: Option[String] = None, channelId: Option[String] = None, channelName: Option[String] = None) derives Encoder.AsObject, Decoder {
+  def isStui: Boolean = kind.exists(WebhookKind.isStui)
+}
+/** stui の、自分が参加していて投稿先に選べるチャンネル（kind は public・private. admin はそのチャンネルの管理者で、受信 Webhook を作れる）. */
+final case class StuiChannelDto(id: String, name: String, kind: String, admin: Boolean = false) derives Encoder.AsObject, Decoder
 final case class DeliveryDto(id: UUID, event: String, attempts: Int, statusCode: Option[Int], lastError: Option[String],
     doneAt: Option[Timestamp], failed: Boolean, createdAt: Timestamp, payload: Json) derives Encoder.AsObject, Decoder
 

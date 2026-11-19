@@ -151,7 +151,8 @@ object Main extends IOApp.Simple:
         help     = new HelpStore(xa)
         notifier = new NotifyService(activity, projects, users, help, sess, cfg.api, Some(new ChatNotifier(tokens, users, http, box, cfg.api)), Some(push))
         svc      = new TaskService(tasks, projects, access, hub, notifier, cfg.api.adminGroups)
-        hooks    = new WebhookService(integ, http, cfg.api)
+        stuiCh   = new StuiChannels(tokens, http, box, cfg.api)
+        hooks    = new WebhookService(integ, http, cfg.api, stuiCh)
         engine   = new AutomationEngine(integ, tasks, projects, users, activity, search, sess, access, svc, notifier, http, lock, cfg.api)
         scm      = new ScmService(integ, tasks, projects, hub, new ScmApi(http), box, lock)
         mailer   = cfg.smtp.map(new SmtpMailer(_))
@@ -177,7 +178,7 @@ object Main extends IOApp.Simple:
             new TaskRoutes(tasks, users, activity, integ, svc, hub, engine, blobs, files, emojis, sess, access, cfg.api).routes <+>
             new HelpRoutes(help, projects, tasks, activity, svc, hub, notifier, files, sess, access, cfg.api).routes <+>
             new SearchRoutes(search, projects, activity, sess, access).routes <+>
-            new IntegrationRoutes(integ, projects, users, activity, hooks, engine, scm, box, sess, access, cfg.api).routes <+>
+            new IntegrationRoutes(integ, projects, users, activity, hooks, stuiCh, engine, scm, box, sess, access, cfg.api).routes <+>
             new TemplateRoutes(tplStore, tplSvc, imports, sess, access).routes <+>
             new StreamRoutes(feed, sess, access).routes <+>
             new OAuthRoutes(new OAuthStore(xa), tasks, projects, activity, sess, access, cfg.api).routes <+>

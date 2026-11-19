@@ -93,6 +93,7 @@ final class IntegrationRoutes(
     users: UserStore,
     activity: ActivityStore,
     webhooks: WebhookService,
+    stui: StuiChannels,
     automation: AutomationEngine,
     scm: ScmService,
     box: SecretBox,
@@ -104,7 +105,53 @@ final class IntegrationRoutes(
   private def audit(s: AuthSession, action: String, target: UUID, detail: Json = Json.obj()) =
     activity.audit(Some(s.user.id), s.viaString, action, Some(target.toString), detail)
 
-  private def hookDto(w: WebhookRow) = WebhookDto(w.id, w.name, w.url, w.secret, w.events, w.enabled)
+  private def hookDto(w: WebhookRow): IO[WebhookDto] =
+    val stuiKind = WebhookKind.isStui(w.kind)
+    w.ownerId.flatTraverse(users.find).map(o => WebhookDto(w.id, w.name, if stuiKind then "" else w.url,
+      if stuiKind then "" else w.secret, w.events, w.enabled, w.kind, w.channelId, w.channelName,
+      o.map(u => UserBrief(u.id, u.name, u.avatarUrl))))
+
+  /** 保存する内容（owner は stui の連携を使う人・受信 Webhook を作った人、hookId は stui の受信 Webhook、drop は消す古い受信 Webhook）。 */
+  private final case class SavedHook(req: WebhookReq, owner: Option[UUID], hookId: Option[String], drop: Option[(UUID, String)])
+
+  /** 古い設定が stui の受信 Webhook で、新しい設定で使わなくなるなら、それを消す（作った人の連携で）。 */
+  private def dropOf(old: Option[WebhookRow]): Option[(UUID, String)] =
+    old.filter(_.kind == WebhookKind.StuiHook).flatMap(o => (o.ownerId, o.stuiHookId).tupled)
+
+  /**
+   * 保存する内容を確かめて整える。
+   *  - url: URL を確かめる
+   *  - stui: 保存した人の連携で投稿する（保存した人を owner にする. 連携していなければ保存できない）
+   *  - stui_hook: チャンネルの管理者が、連携で stui に受信 Webhook を作る（チャンネルが同じなら、前に作ったものをそのまま使う）
+   */
+  private def checkHook(s: AuthSession, pid: UUID, r: WebhookReq, old: Option[WebhookRow]): IO[Either[String, SavedHook]] =
+    val events = r.events.filter(EventKind.all.contains)
+    if r.isStui then
+      val ch     = r.channelId.map(_.trim).filter(_.nonEmpty)
+      val chName = r.channelName.map(_.trim.stripPrefix("#")).filter(_.nonEmpty)
+      val kind   = r.kind.getOrElse(WebhookKind.Stui)
+      val base   = r.copy(name = Option(r.name.trim).filter(_.nonEmpty).getOrElse("stui #" + chName.getOrElse("")), events = events,
+        kind = Some(kind), channelId = ch, channelName = chName)
+      val keep   = old.filter(o => kind == WebhookKind.StuiHook && o.kind == WebhookKind.StuiHook && o.channelId == ch && o.stuiHookId.isDefined)
+      if !stui.configured then IO.pure(Left("stui との連携が設定されていません"))
+      else if ch.isEmpty then IO.pure(Left("チャンネルを選んでください"))
+      else keep match
+        case Some(o) => IO.pure(Right(SavedHook(base.copy(url = o.url), o.ownerId, o.stuiHookId, None)))
+        case None =>
+          stui.connected(s.user.id).flatMap {
+            case false => IO.pure(Left("stui と連携してから保存してください"))
+            case true if kind == WebhookKind.Stui => IO.pure(Right(SavedHook(base.copy(url = ""), Some(s.user.id), None, dropOf(old))))
+            case true =>
+              projects.find(pid).flatMap(p => stui.createHook(s.user.id, ch.get, p.fold("")(x => s"${x.key} ${x.name}"))).map(_.map((hid, url) =>
+                SavedHook(base.copy(url = url), Some(s.user.id), Some(hid), dropOf(old))))
+          }
+    else webhooks.validUrl(r.url) match
+      case Left(f) => IO.pure(Left(f.message))
+      case Right(_) if r.name.trim.isEmpty => IO.pure(Left("名前を入力してください"))
+      case Right(u) => NetGuard.check(u).map(_.map(_ =>
+        SavedHook(r.copy(url = u, events = events, kind = Some(WebhookKind.Url), channelId = None, channelName = None), None, None, dropOf(old))))
+
+  private def dropHook(d: Option[(UUID, String)]): IO[Unit] = d.traverse_((owner, hid) => stui.deleteHook(owner, hid))
 
   private def ruleDto(r: RuleRow): IO[RuleDto] =
     r.runAs.flatTraverse(users.find).map(u => RuleDto(r.id, r.name, r.enabled, r.trigger, r.actions, u.map(x => UserBrief(x.id, x.name, x.avatarUrl)),
@@ -132,30 +179,34 @@ final class IntegrationRoutes(
   val routes: HttpRoutes[IO] = HttpRoutes.of[IO] {
     // ---------------------------------------------------------------- Webhook（送信）
     case req @ GET -> Root / "api" / "projects" / UuidVar(pid) / "webhooks" =>
-      withProject(req, pid, Role.Admin)((_, _) => integ.webhooks(pid).flatMap(ws => Ok(ws.map(hookDto))))
+      withProject(req, pid, Role.Admin)((_, _) => integ.webhooks(pid).flatMap(_.traverse(hookDto)).flatMap(Ok(_)))
 
     case req @ POST -> Root / "api" / "projects" / UuidVar(pid) / "webhooks" =>
-      withProject(req, pid, Role.Admin)((s, _) => body[WebhookReq](req)(r => webhooks.validUrl(r.url) match
-        case Left(f) => fail(f)
-        case Right(_) if r.name.trim.isEmpty => err(Status.BadRequest, "名前を入力してください")
-        case Right(u) => NetGuard.check(u).flatMap {
-          case Left(m) => err(Status.BadRequest, m)
-          case Right(_) =>
-          integ.createWebhook(pid, r.copy(url = u, events = r.events.filter(EventKind.all.contains)), Crypto.randomToken(24)).flatMap(id =>
-            audit(s, "webhook.create", pid, Json.obj("url" -> u.asJson)) *> integ.webhook(id).flatMap(w => Created(w.map(hookDto))))
-        }))
+      withProject(req, pid, Role.Admin)((s, _) => body[WebhookReq](req)(r => checkHook(s, pid, r, None).flatMap {
+        case Left(m) => err(Status.BadRequest, m)
+        case Right(SavedHook(x, owner, hid, _)) =>
+          integ.createWebhook(pid, x, Crypto.randomToken(24), owner, hid).flatMap(id =>
+            audit(s, "webhook.create", pid, Json.obj("kind" -> x.kind.asJson, "url" -> x.url.asJson, "channel" -> x.channelName.asJson)) *>
+              integ.webhook(id).flatMap(_.traverse(hookDto)).flatMap(Created(_)))
+      }))
 
     case req @ PUT -> Root / "api" / "webhooks" / UuidVar(id) =>
-      withItem(req, integ.webhook(id), "Webhook")(_.projectId)((s, w) => body[WebhookReq](req)(r => webhooks.validUrl(r.url) match
+      withItem(req, integ.webhook(id), "Webhook")(_.projectId)((s, w) => body[WebhookReq](req)(r => checkHook(s, w.projectId, r, Some(w)).flatMap {
+        case Left(m) => err(Status.BadRequest, m)
+        case Right(SavedHook(x, owner, hid, drop)) =>
+          integ.updateWebhook(id, x, owner, hid) *> dropHook(drop) *> audit(s, "webhook.update", w.projectId) *> NoContent()
+      }))
+
+    /** stui の、自分が参加していて投稿先に選べるチャンネル（409 は連携していない）。 */
+    case req @ GET -> Root / "api" / "integrations" / "stui" / "channels" =>
+      authed(req)(s => stui.channels(s.user.id).flatMap {
         case Left(f) => fail(f)
-        case Right(u) => NetGuard.check(u).flatMap {
-          case Left(m) => err(Status.BadRequest, m)
-          case Right(_) => integ.updateWebhook(id, r.copy(url = u, events = r.events.filter(EventKind.all.contains))) *>
-              audit(s, "webhook.update", w.projectId) *> NoContent()
-        }))
+        case Right(cs) => Ok(cs)
+      })
 
     case req @ DELETE -> Root / "api" / "webhooks" / UuidVar(id) =>
-      withItem(req, integ.webhook(id), "Webhook")(_.projectId)((s, w) => integ.deleteWebhook(id) *> audit(s, "webhook.delete", w.projectId) *> NoContent())
+      withItem(req, integ.webhook(id), "Webhook")(_.projectId)((s, w) =>
+        integ.deleteWebhook(id) *> dropHook(dropOf(Some(w))) *> audit(s, "webhook.delete", w.projectId) *> NoContent())
 
     case req @ GET -> Root / "api" / "projects" / UuidVar(pid) / "webhooks" / "sample" =>
       withProject(req, pid, Role.Admin)((s, _) => projects.find(pid).flatMap {
@@ -170,8 +221,12 @@ final class IntegrationRoutes(
 
     case req @ POST -> Root / "api" / "webhooks" / UuidVar(id) / "test" =>
       withItem(req, integ.webhook(id), "Webhook")(_.projectId)((s, w) =>
-        webhooks.send(DeliveryRow(UUID.randomUUID(), w.id, w.url, w.secret, "ping",
-          Json.obj("event" -> "ping".asJson, "at" -> Instant.now().asJson, "actor" -> s.user.name.asJson), 0)).flatMap { (r, code) =>
+        projects.find(w.projectId).flatMap { p =>
+          val payload =
+            if WebhookKind.isStui(w.kind) then EventHub.payload("ping", p, None, Some((s.user.id, s.user.name)), Json.obj())
+            else Json.obj("event" -> "ping".asJson, "at" -> Instant.now().asJson, "actor" -> s.user.name.asJson)
+          webhooks.send(DeliveryRow(UUID.randomUUID(), w.id, w.url, w.secret, "ping", payload, 0, w.kind, w.ownerId, w.channelId))
+        }.flatMap { (r, code) =>
           Ok(Json.obj("ok" -> (r == OutboxResult.Sent).asJson, "statusCode" -> code.asJson, "result" -> r.toString.asJson))
         })
 
