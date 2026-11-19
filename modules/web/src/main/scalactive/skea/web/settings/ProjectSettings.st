@@ -19,6 +19,12 @@ val routes: PathPatternRoutes = List(
   ("repos", _ => Repos()),
 )
 
+/** 左のメニュー（見出しごとにまとめる）. */
+val groups: List[(String, List[(String, String)])] = List(
+  "プロジェクト" -> List("general" -> "一般", "members" -> "メンバーと権限", "helpdesk" -> "ヘルプデスク"),
+  "課題の項目" -> List("statuses" -> "ステータス", "labels" -> "ラベル", "fields" -> "カスタムフィールド", "templates" -> "テンプレート・繰り返し"),
+  "自動化と連携" -> List("import" -> "取り込み（CSV・Jira）", "automations" -> "自動化", "webhooks" -> "Webhook", "repos" -> "リポジトリ連携"),
+)
 
 def mounted(): Unit = pageTitle("設定")
 </script>
@@ -27,17 +33,10 @@ def mounted(): Unit = pageTitle("設定")
   <div class="page">
     <div class="settings">
       <nav class="side-nav">
-        <RouterLink :to='base + "/general"'>一般</RouterLink>
-        <RouterLink :to='base + "/members"'>メンバーと権限</RouterLink>
-        <RouterLink :to='base + "/helpdesk"'>ヘルプデスク</RouterLink>
-        <RouterLink :to='base + "/statuses"'>ステータス</RouterLink>
-        <RouterLink :to='base + "/labels"'>ラベル</RouterLink>
-        <RouterLink :to='base + "/fields"'>カスタムフィールド</RouterLink>
-        <RouterLink :to='base + "/templates"'>テンプレート・繰り返し</RouterLink>
-        <RouterLink :to='base + "/import"'>取り込み（CSV・Jira）</RouterLink>
-        <RouterLink :to='base + "/automations"'>自動化</RouterLink>
-        <RouterLink :to='base + "/webhooks"'>Webhook</RouterLink>
-        <RouterLink :to='base + "/repos"'>リポジトリ連携</RouterLink>
+        <div v-for="g in groups" class="side-group">
+          <div class="side-title">{{ g._1 }}</div>
+          <RouterLink v-for="i in g._2" :to='base + "/" + i._1'>{{ i._2 }}</RouterLink>
+        </div>
       </nav>
       <div class="content">
         <p v-if="Store.isProjectAdmin.mapC(!_)" class="muted small">設定を変えるにはプロジェクトの管理権限が必要です（閲覧のみ）。</p>
@@ -48,15 +47,9 @@ def mounted(): Unit = pageTitle("設定")
 </template>
 
 <style scoped>
-.settings { display: grid; grid-template-columns: 200px 1fr; gap: 1.5rem; }
-.side-nav { display: flex; flex-direction: column; gap: 2px; }
-.side-nav a { padding: .45rem .7rem; border-radius: 7px; color: var(--fg); font-size: .9rem; }
-.side-nav a:hover { background: var(--hover); text-decoration: none; }
-.side-nav a.router-link-active { background: var(--accent-weak); color: var(--accent); }
+.settings { display: grid; grid-template-columns: 220px 1fr; gap: 2rem; align-items: start; }
 .content { min-width: 0; }
 @media (max-width: 720px) {
-  .settings { grid-template-columns: 1fr; }
-  .side-nav { flex-direction: row; overflow-x: auto; }
-  .side-nav a { white-space: nowrap; }
+  .settings { grid-template-columns: 1fr; gap: 1rem; }
 }
 </style>

@@ -143,6 +143,21 @@ table.list tr.clickable:hover td { background: var(--hover); }
 .tabs a:hover, .tabs button:hover { color: var(--fg); text-decoration: none; background: none; }
 .tabs .router-link-active, .tabs .active { color: var(--accent); border-bottom-color: var(--accent); }
 
+
+/* 設定画面の左のメニュー（RouterLink の a には scoped の指定が届かないので、ここに書く） */
+.side-nav { position: sticky; top: calc(var(--header) + 1rem); display: flex; flex-direction: column; gap: 1rem;
+  padding: .7rem; border: 1px solid var(--line); border-radius: 10px; background: var(--side); }
+.side-group { display: flex; flex-direction: column; gap: 1px; }
+.side-title { padding: 0 .7rem .3rem; font-size: .72rem; font-weight: 600; letter-spacing: .04em; color: var(--muted); }
+.side-nav a { display: block; padding: .42rem .7rem; border-left: 3px solid transparent; border-radius: 6px; color: var(--fg); font-size: .9rem; line-height: 1.4; }
+.side-nav a:hover { background: var(--hover); text-decoration: none; }
+.side-nav a.router-link-active { background: var(--accent-weak); border-left-color: var(--accent); color: var(--accent); font-weight: 600; }
+@media (max-width: 720px) {
+  .side-nav { position: static; flex-direction: row; gap: .3rem; overflow-x: auto; scrollbar-width: none; padding: .4rem; }
+  .side-group { flex-direction: row; gap: .3rem; }
+  .side-title { display: none; }
+  .side-nav a { white-space: nowrap; border-left: none; }
+}
 .chips { display: flex; flex-wrap: wrap; gap: .35rem; }
 .chip { font-size: .82rem; padding: .2rem .7rem; border-radius: 999px; border: 1px solid var(--line); background: var(--bg); cursor: pointer; }
 .chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
