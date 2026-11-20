@@ -235,29 +235,8 @@ object Dom {
 /** 表示の補助. */
 object Fmt {
 
-  private def opts(o: (String, String)*): js.Dynamic = js.Dynamic.literal(o.map((k, v) => k -> (v: js.Any))*)
-
-  def dateTime(t: Timestamp): String =
-    t.toDate.asInstanceOf[js.Dynamic].toLocaleString(
-      "ja-JP",
-      opts(
-        "year" -> "numeric",
-        "month" -> "2-digit",
-        "day" -> "2-digit",
-        "hour" -> "2-digit",
-        "minute" -> "2-digit"
-      )
-    ).asInstanceOf[String]
-
-  /** 「3分前」「昨日」など. */
-  def ago(t: Timestamp): String = {
-    val diff = (js.Date.now() - t.toEpochMilli) / 1000
-    if (diff < 60) "たった今"
-    else if (diff < 3600) s"${(diff / 60).toInt}分前"
-    else if (diff < 86400) s"${(diff / 3600).toInt}時間前"
-    else if (diff < 86400 * 7) s"${(diff / 86400).toInt}日前"
-    else dateTime(t).take(10)
-  }
+  // 日時の表示（2026/11/15 09:30・「3分前」）は sbirds-lib
+  export sbirds.web.Dates.{ago, dateTime}
 
   /** 2026-11-15 → 11/15(日). */
   def day(d: String): String = {
@@ -509,14 +488,7 @@ object Dialog {
 }
 
 /** この端末だけの表示の設定（localStorage. 使えないときは既定値）. */
-object Prefs {
-
-  def get(key: String, default: String): String =
-    scala.util.Try(Option(dom.window.localStorage.getItem("skea." + key))).toOption.flatten.getOrElse(default)
-
-  def set(key: String, value: String): Unit = scala.util.Try(dom.window.localStorage.setItem("skea." + key, value))
-
-}
+object Prefs extends sbirds.web.LocalPrefs("skea")
 
 /**
  * タッチ端末でのドラッグ＆ドロップ（カンバン・バックログ）.
@@ -636,20 +608,7 @@ object TouchDnd {
 }
 
 /** 画面の色（自動 = OS の設定、ライト、ダーク）. この端末に記憶する. */
-object Theme {
-
-  val current: RV[String] = RV(Prefs.get("theme", "system"))
-
-  def apply(): Unit = {
-    val el = dom.document.documentElement
-    if (current.v == "system") el.removeAttribute("data-theme") else el.setAttribute("data-theme", current.v)
-  }
-
-  def set(v: String): Unit = { current := v; Prefs.set("theme", v); apply() }
-
-  val options: List[(String, String)] = List("system" -> "🖥 自動（OS に合わせる）", "light" -> "☀️ ライト", "dark" -> "🌙 ダーク")
-
-}
+object Theme extends sbirds.web.ThemeSwitch(Prefs)
 
 /** オートコンプリート（parts/Combo.st）の選択肢. icon は前に付ける文字、user はアイコン、color はラベルの色. */
 final case class Opt(value: String,

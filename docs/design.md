@@ -100,7 +100,7 @@ skea はチーム向けのタスク管理システムです（プロジェクト
 - **ユーザー**：初回ログインで作成。`ADMIN_GROUPS` の所属者、または画面で管理者にしたユーザーがシステム管理者。
   IdP 未設定の開発環境では `DEV_LOGIN=true` で名前だけのログインを許可する（本番では使わない）。
   ログインの state は、DB に加えてブラウザの Cookie にも入れて照合する。
-- **CSRF**: Cookie のセッションでの更新系の要求は、Origin（なければ Referer）が `PUBLIC_URL` と同じ origin のときだけ受け付ける。
+- **CSRF**: Cookie のセッションでの更新系の要求は、Origin（なければ Referer）が `PUBLIC_URL` と同じ origin で、Sec-Fetch-Site が別のサイトを示していないときだけ受け付ける（sbirds-lib の `Csrf`）。
 - **外部への送信（SSRF 対策）**: Webhook・自動化の Web リクエスト・リポジトリ連携は、名前解決したアドレスが内部（loopback・link-local・プライベート）なら送らない（`OUTBOUND_ALLOW_HOSTS` で例外）。
 - **自動化の実行ユーザー**: 自分以外を指定できるのはシステム管理者だけ。実行中はシステム管理者の権限を使わず、編集できないタスク（ほかのプロジェクトのリンク先など）には触れない。
 - **リクエストの上限**: 本文は 2MB（アップロードは `MAX_UPLOAD_BYTES`、受信 Webhook は 10MB）。リッチテキストは入れ子の深さも制限する。

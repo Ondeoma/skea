@@ -274,7 +274,7 @@ def nameOf(id: UUID): String = Fmt.statusName(Store.meta.v, id)
                 <span class="grow">{{ l.target.get.title }}</span>
                 <span :class='"badge cat-" + l.target.get.statusCategory'>{{ l.target.get.statusName }}</span>
               </template>
-              <template v-else><a :href='l.url.getOrElse("")' target="_blank" rel="noopener" class="grow">{{ l.title }}</a></template>
+              <template v-else><a :href='Fmt.href(l.url.getOrElse(""))' target="_blank" rel="noopener" class="grow">{{ l.title }}</a></template>
               <button v-if="canEdit(s)" class="ghost small" @click="removeLink(s, props, l)">×</button>
             </div>
             <form v-if="s.addingLink" class="row addlink" @submit.prevent="addLink(s, props)">

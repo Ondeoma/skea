@@ -1,5 +1,6 @@
 package skea.api
 
+import sbirds.db.*
 import sbirds.observe.Log
 
 import cats.effect.*

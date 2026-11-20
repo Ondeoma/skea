@@ -1,5 +1,6 @@
 package skea.db
 
+import sbirds.db.*
 import sbirds.shared.AppError
 
 import cats.effect.*
@@ -573,9 +574,10 @@ final class TaskStore(xa: Transactor[IO]) extends TxStore(xa) {
   def addDependency(pred: UUID, succ: UUID, kind: String): IO[Either[AppError, Unit]] = tx(
     if pred == succ then fail(AppError(ErrorCode.TaskDependsOnSelf))
     else
-      sql"""with recursive chain(id, depth) as (
-              select successor_id, 0 from task_dependency where predecessor_id = $succ
-              union all select d.successor_id, c.depth + 1 from task_dependency d join chain c on d.predecessor_id = c.id where c.depth < 200)
+      // union で重複を除く（union all だと、分かれて合流する依存が重なったときに行が倍々に増える）
+      sql"""with recursive chain(id) as (
+              select successor_id from task_dependency where predecessor_id = $succ
+              union select d.successor_id from task_dependency d join chain c on d.predecessor_id = c.id)
             select exists(select 1 from chain where id = $pred)""".query[Boolean].unique.flatMap { cyc =>
         if cyc then fail(AppError(ErrorCode.TaskDependencyCycle))
         else

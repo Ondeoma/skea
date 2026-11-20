@@ -1,5 +1,6 @@
 package skea.api
 
+import sbirds.db.*
 import sbirds.shared.AppError
 
 import cats.effect.*
@@ -60,7 +61,7 @@ final class WebhookService(integ: IntegrationStore, http: Client[IO], cfg: ApiCo
 
   private def sendUrl(d: DeliveryRow): IO[(OutboxResult, Option[Int])] = {
     val req = request(d)
-    // 宛先は送るたびに確かめる（名前解決の結果が変わっても内部へ送らない）
+    // 宛先は送るたびに確かめる（http は NetGuard.client. 確かめた IP にそのままつなぐので、確かめた後に名前の向き先が変わっても内部へ送らない）
     NetGuard.check(req.uri).flatMap {
       case Left(m) => IO.pure((OutboxResult.Skip(m), None))
       case Right(_) => sbirds.observe.Telemetry.span("webhook.deliver", "webhook.event" -> d.event)(
@@ -68,6 +69,7 @@ final class WebhookService(integ: IntegrationStore, http: Client[IO], cfg: ApiCo
             case Right(c) if c >= 200 && c < 300 => (OutboxResult.Sent, Some(c))
             case Right(c) if c == 410 => (OutboxResult.Skip(s"HTTP $c"), Some(c))
             case Right(c) => (OutboxResult.Retry(s"HTTP $c"), Some(c))
+            case Left(r: sbirds.net.NetGuard.Rejected) => (OutboxResult.Skip(NetGuard.message(r)), None)
             // 例外の文（内部のホスト名など）は返さない
             case Left(e) => (OutboxResult.Retry(s"接続できませんでした（${e.getClass.getSimpleName}）"), None)
           }

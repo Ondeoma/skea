@@ -1,5 +1,6 @@
 package skea.api
 
+import sbirds.db.*
 import sbirds.links.IntegrationTokenStore
 
 import sbirds.shared.AppError
@@ -14,7 +15,6 @@ import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.headers.Authorization
 import skea.auth.SecretBox
 import skea.core.*
-import skea.db.*
 import skea.shared.*
 
 import java.util.UUID

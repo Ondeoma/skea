@@ -15,6 +15,7 @@ import org.http4s.headers.{Authorization, Location}
 import sbirds.auth.Crypto
 import skea.auth.SecretBox
 import skea.shared.*
+import sbirds.shared.SafePath
 
 import java.time.Instant
 import java.util.UUID
@@ -65,9 +66,7 @@ final class LinkServiceRoutes(store: IntegrationTokenStore,
       u.scheme.exists(_.value.toString == "http") &&
         u.authority.exists(a => a.userInfo.isEmpty && Set("localhost", "127.0.0.1").contains(a.host.value))
     )
-    val back = Option(returnTo).filter(p =>
-      (p.startsWith("/") && !p.startsWith("//") && !p.startsWith("/\\")) || devOrigin
-    ).getOrElse("/settings")
+    val back = Option(returnTo).filter(p => SafePath.isLocal(p) || devOrigin).getOrElse("/settings")
     redirect(back + (if back.contains("?") then "&" else "?") + s"integration=$p&result=$result")
   }
 

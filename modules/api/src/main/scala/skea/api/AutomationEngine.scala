@@ -1,5 +1,6 @@
 package skea.api
 
+import sbirds.db.*
 import sbirds.shared.AppError
 
 import cats.effect.*
@@ -593,6 +594,10 @@ final class AutomationEngine(integ: IntegrationStore,
               http.run(req).use(r => r.bodyText.compile.string.map(s => (r.status.code, s.take(100000)))).timeout(
                 20.seconds
               ).attempt.map {
+                case Left(r: sbirds.net.NetGuard.Rejected) =>
+                  val m = NetGuard.message(r)
+                  run.add("error", s"Web リクエスト（$method $u）: $m")
+                  run.setVar(saveAs, Json.obj("status" -> 0.asJson, "body" -> Json.Null, "error" -> m.asJson))
                 case Left(e) =>
                   run.add("error", s"Web リクエスト（$method $u）に失敗しました: ${e.getMessage}")
                   run.setVar(

@@ -2,6 +2,8 @@
 export DATABASE_URL=jdbc:postgresql://localhost:54339/skea DATABASE_USER=skea DATABASE_PASSWORD=skea
 export PUBLIC_URL=http://localhost:8090 HTTP_PORT=8090
 export DEV_LOGIN=true
+# 回数の制限（IP ごとの1分あたり）。手元ではすべての要求が 127.0.0.1 から来るので、開発中は緩める
+export RATE_LIMIT_AUTH=${RATE_LIMIT_AUTH:-300}
 export S3_ENDPOINT=http://localhost:3910 S3_BUCKET=skea S3_ACCESS_KEY=skea S3_SECRET_KEY=skeaskeaskeaskea
 export SMTP_HOST=localhost SMTP_PORT=1026 SMTP_TLS=none MAIL_FROM=skea@example.com
 export WEBHOOK_ALLOW_HTTP=true

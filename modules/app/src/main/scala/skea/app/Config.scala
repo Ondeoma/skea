@@ -1,46 +1,16 @@
 package skea.app
 
+import sbirds.http.Env.*
+import sbirds.db.*
 import cats.effect.*
 import cats.syntax.all.*
 import skea.api.*
 import sbirds.auth.OidcConfig
-import skea.db.*
 import sbirds.mail.SmtpConfig
 import sbirds.storage.S3Config
 
 /** 設定は環境変数から読む。 */
 object Config {
-  private def opt(name: String): Option[String] = sys.env.get(name).map(_.trim).filter(_.nonEmpty)
-  private def int(name: String): Option[Int] = opt(name).flatMap(_.toIntOption)
-  private def enabled(name: String): Boolean = opt(name).exists(_.equalsIgnoreCase("true"))
-  private def required(name: String): Either[String, String] = opt(name).toRight(s"環境変数 $name を設定してください")
-
-  /** OAUTH_CLIENTS: [{"id":"skiwi","secret":"…","redirectUri":"https://…/callback","name":"skiwi","scopes":["read","write"]}]（scopes は省くと read だけ） */
-  private def oauthClients: Either[String, List[skea.api.OAuthClient]] =
-    opt("OAUTH_CLIENTS").fold(Right(Nil)) { s =>
-      io.circe.parser.parse(s).flatMap(_.as[List[io.circe.Json]]).left.map(_ =>
-        "OAUTH_CLIENTS は JSON の配列で指定してください"
-      ).flatMap(_.traverse { j =>
-        val c = j.hcursor
-        (c.get[String]("id"), c.get[String]("secret"), c.get[String]("redirectUri")).tupled.toOption
-          .filter((id, sec, uri) =>
-            id.nonEmpty && sec.length >= 16 && (uri.startsWith("https://") || uri.startsWith("http://localhost"))
-          )
-          .map((id, sec, uri) =>
-            skea.api.OAuthClient(
-              id,
-              sec,
-              uri,
-              c.get[String]("name").getOrElse(id),
-              c.get[List[String]]("scopes").toOption.map(_.filter(Set(
-                "read",
-                "write"
-              ))).filter(_.nonEmpty).getOrElse(List("read"))
-            )
-          )
-          .toRight("OAUTH_CLIENTS の各要素には id・secret（16文字以上）・redirectUri（https://）を指定してください")
-      })
-    }
 
   def load: IO[AppConfig] = IO.fromEither(
     (for {
@@ -48,7 +18,8 @@ object Config {
       dbUser <- required("DATABASE_USER")
       dbPass <- required("DATABASE_PASSWORD")
       pub <- required("PUBLIC_URL")
-      devLogin = enabled("DEV_LOGIN")
+      // 開発用のログインは名前だけでだれにでも（管理者にも）なれるので、手元（localhost）で開くときだけ（sbirds.http.Env.devLogin）
+      devLogin <- devLogin(pub)
       oidc <- (opt("OIDC_ISSUER"), opt("OIDC_CLIENT_ID"), opt("OIDC_CLIENT_SECRET")) match {
         case (Some(i), Some(c), Some(s)) =>
           Right(Some(OidcConfig(
@@ -71,7 +42,7 @@ object Config {
         case None if devLogin => Right("skea-development-secret")
         case None => Left("APP_SECRET（16文字以上の秘密の値）を設定してください")
       }
-      clients <- oauthClients
+      clients <- sbirds.oauth.OAuthClient.fromEnv()
     } yield {
       val base = pub.stripSuffix("/")
       AppConfig(

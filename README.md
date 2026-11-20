@@ -116,7 +116,9 @@ java -cp 'dist/lib/*' skea.app.Main
 | `LOG_FORMAT` / `LOG_LEVEL` | 標準出力のログの形（`text`（既定）・`json`）と水準（既定 `INFO`）。ログにはトレースの ID と操作したユーザーが付く |
 | `SKORIMAKO_RUM_TOKEN` / `SKORIMAKO_RUM_URL` / `SKORIMAKO_RUM_SAMPLE_RATE` | 画面のブラウザの観測（skorimako の RUM）。トークンは skorimako の管理の画面で登録したアプリのもの。URL を省略すると `SKORIMAKO_URL` |
 | `VAPID_SUBJECT` | プッシュ通知（PWA）の連絡先（`mailto:…` か `https://…`。省略すると `PUBLIC_URL`）。VAPID の鍵は初回の起動で作って DB に保存する |
-| `DEV_LOGIN` | 開発用のログインを有効にする（OIDC を設定しない場合のみ。OIDC と一緒に設定すると起動しない） |
+| `RATE_LIMIT_AUTH` / `RATE_LIMIT_PUBLIC` | IP ごとの1分あたりの回数の上限。ログインと OAuth の認可の画面（`/auth/…`・`/oauth/authorize`、既定 20）と、OAuth のトークンの発行・失効（`/oauth/token`・`/oauth/revoke`）（既定 120）。0 なら制限しない。ノードごとに数える。超えたら 429（`SKEA-1028`）と `Retry-After` |
+| `TRUSTED_PROXIES` | リバースプロキシの IP か CIDR（カンマ区切り）。ここから来た要求だけ `X-Forwarded-For` を信じて、回数を数える IP を決める。リバースプロキシの後ろに置くときは必ず設定する（未設定だと、全員がプロキシの IP として数えられる） |
+| `DEV_LOGIN` | 開発用のログインを有効にする（OIDC を設定せず、`PUBLIC_URL` が localhost〈`localhost`・`127.0.0.1`・`[::1]`・`*.localhost`〉の場合のみ。それ以外の `PUBLIC_URL` で設定すると起動しない） |
 
 ## API・MCP
 

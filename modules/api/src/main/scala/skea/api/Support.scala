@@ -33,13 +33,9 @@ final case class LinkService(provider: String,
   def server: String = internalUrl.getOrElse(url)
 }
 
-/** 認可を求める外部のサービス（OAUTH_CLIENTS で登録する）。redirectUri は完全一致で照合する。 */
-/** scopes はそのクライアントが求めてよいスコープ（read・write. 既定は read だけ）. */
-final case class OAuthClient(id: String,
-                             secret: String,
-                             redirectUri: String,
-                             name: String,
-                             scopes: List[String] = List("read"))
+/** 認可を求める外部のサービス（OAUTH_CLIENTS で登録する。sbirds.oauth.OAuthClient）。scopes は read・write（既定は read だけ）。 */
+type OAuthClient = sbirds.oauth.OAuthClient
+val OAuthClient = sbirds.oauth.OAuthClient
 
 /** 処理の結果（失敗は AppError: エラーコードと文言）. */
 type Res[A] = IO[Either[AppError, A]]

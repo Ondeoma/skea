@@ -1,5 +1,6 @@
 package skea.app
 
+import sbirds.db.*
 import sbirds.links.IntegrationTokenStore
 
 import skea.core.ErrorCode
@@ -10,12 +11,9 @@ import cats.effect.*
 import cats.syntax.all.*
 import com.comcast.ip4s.*
 import doobie.implicits.*
-import fs2.io.file.Path
 import org.http4s.*
-import org.http4s.dsl.io.*
 import org.http4s.ember.client.EmberClientBuilder
 import org.http4s.ember.server.EmberServerBuilder
-import org.http4s.server.staticcontent.*
 import skea.api.*
 import sbirds.auth.{OidcClient, OidcConfig}
 import skea.auth.SecretBox
@@ -23,7 +21,8 @@ import skea.db.*
 import skea.integrations.ScmApi
 import sbirds.mail.{SmtpConfig, SmtpMailer}
 import sbirds.observe.{HttpClientTelemetry, HttpTelemetry, Metrics, RumRoutes, Telemetry}
-import sbirds.http.Errors
+import sbirds.http.{BodyLimit, Errors, Health, RateLimit, RateLimitConfig, SecurityHeaders, Spa}
+import sbirds.shared.AppError
 import sbirds.storage.{S3BlobStore, S3Config}
 
 import scala.concurrent.duration.*
@@ -52,6 +51,8 @@ object Main extends IOApp.Simple {
   def run: IO[Unit] =
     for {
       cfg <- Config.load
+      // IP ごとの回数の制限（RATE_LIMIT_AUTH・RATE_LIMIT_PUBLIC・TRUSTED_PROXIES）
+      rate <- IO.fromEither(RateLimitConfig.fromEnv().left.map(new IllegalArgumentException(_)))
       n <- migrateWithRetry(cfg)
       _ <- sbirds.observe.Log.println(s"[skea] database migrated ($n migration(s) applied); node ${cfg.nodeId}")
       _ <- (for {
@@ -60,6 +61,8 @@ object Main extends IOApp.Simple {
         _ <- gauges(xa)
         // 外への呼び出しもトレースに出す（traceparent を付けて送る）
         http <- EmberClientBuilder.default[IO].withTimeout(30.seconds).build.map(HttpClientTelemetry(_))
+        // 利用者が設定した URL（Webhook・自動化の Web リクエスト・リポジトリの API）へ送るクライアント. 確かめた IP にそのままつなぐ
+        outHttp <- NetGuard.client.map(HttpClientTelemetry(_))
         users = new UserStore(xa)
         projects = new ProjectStore(xa)
         tasks = new TaskStore(xa)
@@ -89,7 +92,7 @@ object Main extends IOApp.Simple {
         )
         svc = new TaskService(tasks, projects, access, hub, notifier, cfg.api.adminGroups)
         stuiCh = new StuiChannels(tokens, http, box, cfg.api)
-        hooks = new WebhookService(integ, http, cfg.api, stuiCh)
+        hooks = new WebhookService(integ, outHttp, cfg.api, stuiCh)
         engine = new AutomationEngine(
           integ,
           tasks,
@@ -101,11 +104,11 @@ object Main extends IOApp.Simple {
           access,
           svc,
           notifier,
-          http,
+          outHttp,
           lock,
           cfg.api
         )
-        scm = new ScmService(integ, tasks, projects, hub, new ScmApi(http), box, lock)
+        scm = new ScmService(integ, tasks, projects, hub, new ScmApi(outHttp), box, lock)
         mailer = cfg.smtp.map(new SmtpMailer(_))
         tplStore = new TemplateStore(xa)
         emojis = new EmojiStore(xa)
@@ -131,7 +134,12 @@ object Main extends IOApp.Simple {
         )
         _ <- loops.traverse_(_.background)
         rest =
-          healthRoutes(xa, cfg.nodeId) <+>
+          // ロードバランサー用のヘルスチェック。DB（プライマリ）に書けない状態なら 503
+          Health.routes(
+            Database.isPrimary(xa),
+            s"ok ${cfg.nodeId}",
+            e => Log.report(ErrorCode.HealthCheckFailed, "", e)
+          ) <+>
             new AuthRoutes(oidc, users, activity, sess, access, cfg.api).routes <+>
             new UserRoutes(users, projects, activity, blobs, emojis, sess, access).routes <+>
             new ProjectRoutes(projects, tasks, users, activity, svc, hub, sess, access, cfg.api).routes <+>
@@ -173,9 +181,10 @@ object Main extends IOApp.Simple {
             RumRoutes.routes <+>
             new PushRoutes(pushStore, push, sess, access).routes
         app = rest <+> new McpRoutes(rest, sess, cfg.api.publicUrl).routes
-        all = cfg.staticDir.fold(app)(d => app <+> spa(d))
+        // ビルド済みの画面の配信。存在しないパスは index.html（SPA）
+        all = cfg.staticDir.fold(app)(d => app <+> Spa.routes(d, Spa.startsWith(apiPaths*)))
         httpApp <- HttpTelemetry(
-          Errors.handle(secured(all, cfg.api.maxUploadBytes).orNotFound, ErrorCode.Unexpected),
+          Errors.handle(secured(rateLimited(all, rate), cfg.api.maxUploadBytes).orNotFound, ErrorCode.Unexpected),
           apiPaths.map("/" + _)
         )
         _ <- EmberServerBuilder.default[IO]
@@ -230,20 +239,6 @@ object Main extends IOApp.Simple {
     ).sequence_
   }
 
-  /** ロードバランサー用のヘルスチェック。DB（プライマリ）に書けない状態なら 503。 */
-  private def healthRoutes(xa: doobie.Transactor[IO], node: String): HttpRoutes[IO] = HttpRoutes.of[IO] {
-    case GET -> Root / "healthz" =>
-      sql"select not pg_is_in_recovery()".query[Boolean].unique.transact(xa).timeout(3.seconds).attempt.flatMap {
-        case Right(true) => text(Status.Ok, s"ok $node")
-        case Right(false) => text(Status.ServiceUnavailable, "database is read-only (not primary)")
-        case Left(e) => Log.report(ErrorCode.HealthCheckFailed, "", e) *>
-            text(Status.ServiceUnavailable, "database unavailable")
-      }
-  }
-
-  private def text(status: Status, body: String): IO[Response[IO]] =
-    IO.pure(Response[IO](status).withEntity(body)(using EntityEncoder.stringEncoder))
-
   private def blobStore(cfg: AppConfig): Resource[IO, Option[sbirds.storage.BlobStore]] = cfg.s3 match {
     case Some(c) => S3BlobStore.resource(c).evalTap(_.ensureBucket).map(Some(_))
     case None => Resource.eval(sbirds.observe.Log.println("[skea] WARNING: S3_ENDPOINT が未設定のため、添付ファイルは使えません").as(None))
@@ -296,56 +291,30 @@ object Main extends IOApp.Simple {
    * （ファイルのアップロード（multipart）は MAX_UPLOAD_MB（と multipart の見出しの分の余裕 1MB）、受信 Webhook は 10MB、それ以外は 2MB）。
    */
   private def secured(routes: HttpRoutes[IO], maxUpload: Long): HttpRoutes[IO] = {
-    val defaults = List(
-      "X-Frame-Options" -> "DENY",
-      "X-Content-Type-Options" -> "nosniff",
-      "Referrer-Policy" -> "same-origin",
-      "Content-Security-Policy" -> "frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
+    val headers = SecurityHeaders.Policy(
+      referrer = Some("same-origin"),
+      csp = Some("frame-ancestors 'none'; object-src 'none'; base-uri 'self'"),
+      keepExisting = true
     )
     def limitOf(req: Request[IO]): Long =
       if req.contentType.exists(_.mediaType.isMultipart) then maxUpload + 1024 * 1024
       else if req.pathInfo.renderString.startsWith("/hooks/") then 10L * 1024 * 1024
       else 2L * 1024 * 1024
-    HttpRoutes[IO] { req =>
-      val limit = limitOf(req)
-      val res =
-        if req.contentLength.exists(_ > limit) then
-          cats.data.OptionT.liftF(
-            if limit >= maxUpload then
-              Errors.respond(ErrorCode.UploadTooLarge, s"ファイルが大きすぎます（上限 ${maxUpload / 1024 / 1024}MB）")
-            else Errors.respond(ErrorCode.RequestTooLarge)
-          )
-        else {
-          // Content-Length がない（chunked）ときも、上限を超えたら読むのをやめる
-          val body = req.body.chunks.mapAccumulate(0L)((n, c) => (n + c.size, c)).flatMap {
-            (n, c) =>
-              if n > limit then fs2.Stream.raiseError[IO](new IllegalArgumentException("request body too large"))
-              else fs2.Stream.chunk(c)
-          }
-          routes(req.withBodyStream(body))
-        }
-      res.map(r =>
-        defaults.foldLeft(r)((acc, h) =>
-          if acc.headers.get(org.typelevel.ci.CIString(h._1)).isDefined then acc else acc.putHeaders(h)
-        )
-      )
-    }
+    def tooLarge(limit: Long): AppError =
+      if limit >= maxUpload then
+        AppError(ErrorCode.UploadTooLarge, s"ファイルが大きすぎます（上限 ${maxUpload / 1024 / 1024}MB）")
+      else AppError(ErrorCode.RequestTooLarge)
+    SecurityHeaders(headers)(BodyLimit(req => Some(limitOf(req)), (_, limit) => tooLarge(limit))(routes))
   }
+
+  /**
+   * IP ごとの回数の制限（1分あたり・ノードごと。0 なら制限しない）。数え方は全サービス共通（sbirds.http.RateLimit.standard）:
+   * ログイン（/auth/…）と OAuth の認可の画面（/oauth/authorize）を RATE_LIMIT_AUTH（既定 20）、
+   * OAuth のトークンの発行・失効（/oauth/token・/oauth/revoke）と公開の API（/api/public/…）を RATE_LIMIT_PUBLIC（既定 120）で数える。
+   */
+  private def rateLimited(routes: HttpRoutes[IO], cfg: RateLimitConfig): HttpRoutes[IO] =
+    RateLimit.standard(routes, cfg, ErrorCode.TooManyRequests)()
 
   /** バックエンドのパスの先頭（画面の index.html を返さない. トレース・アクセスログの対象）。 */
   private val apiPaths = List("api", "auth", "hooks", "mcp", "oauth")
-
-  /** ビルド済みの画面の配信。存在しないパスは index.html（SPA）。 */
-  private def spa(dir: String): HttpRoutes[IO] = {
-    val files = fileService[IO](FileService.Config(dir))
-    val index = HttpRoutes.of[IO] {
-      case req @ GET -> _ if !apiPaths.exists(p => req.pathInfo.renderString.startsWith("/" + p)) =>
-        StaticFile.fromPath(Path(dir) / "index.html", Some(req)).getOrElseF(NotFound())
-    }
-    HttpRoutes[IO] { req =>
-      val cc =
-        if req.pathInfo.renderString.startsWith("/assets/") then "public, max-age=31536000, immutable" else "no-cache"
-      (files <+> index).run(req).map(_.putHeaders("Cache-Control" -> cc))
-    }
-  }
 }

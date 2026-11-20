@@ -1,5 +1,6 @@
 package skea.db
 
+import sbirds.db.*
 import sbirds.observe.Log
 
 import sbirds.shared.AppError
