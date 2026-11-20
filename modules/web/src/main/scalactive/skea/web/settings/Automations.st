@@ -105,10 +105,10 @@ def save(s: State): Unit = {
 }
 
 def remove(s: State, r: RuleDto): Unit =
-  Dialog.confirm(s"ルール「${r.name}」を削除しますか？") { Store.report(Api.delete(s"/api/automations/${r.id}"))(_ => load(s)) }
+  Dialog.confirm(s"ルール「${r.name}」を削除しますか？") { Toasts.report(Api.delete(s"/api/automations/${r.id}"))(_ => load(s)) }
 
 def toggle(s: State, r: RuleDto): Unit =
-  Store.report(Api.putUnit(s"/api/automations/${r.id}", RuleReq(r.name, !r.enabled, r.trigger, r.actions, r.runAs.map(_.id)).asJson))(_ => load(s))
+  Toasts.report(Api.putUnit(s"/api/automations/${r.id}", RuleReq(r.name, !r.enabled, r.trigger, r.actions, r.runAs.map(_.id)).asJson))(_ => load(s))
 
 /** テンプレート（トリガーの種類・条件・アクション）. */
 val templates: List[(String, String, String, String, String)] = List(
@@ -220,7 +220,7 @@ def logText(r: RunDto): String = r.log.asArray.toList.flatten.map(l => l.hcursor
           </div>
           <label class="field"><span>アクション（JSON の配列）</span><textarea class="code" v-model="s.actions"></textarea></label>
           <div class="field"><span>実行するユーザー</span>
-            <Combo :bind="Some(s.runAs)" :live="Some(members.mapC(Opt.users))" clearLabel="ルールの作成者" /></div>
+            <Combo :bind="Some(s.runAs)" :live="Some(members.mapC(Opts.users))" clearLabel="ルールの作成者" /></div>
           <p v-if="s.error.mapC(_.nonEmpty)" class="error">{{ s.error }}</p>
           <div class="actions"><button type="button" @click="s.editing := None">キャンセル</button><button type="submit" class="primary">保存</button></div>
         </form>

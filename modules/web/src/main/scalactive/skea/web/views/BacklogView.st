@@ -52,7 +52,7 @@ def drop(s: State, sprint: Option[UUID], e: dom.Event): Unit = {
   Dnd.drop(zone(sprint), tasksOf(s, sprint).v, e).foreach { (id, after0, before) =>
     val after = after0.orElse(before.flatMap(b => all.takeWhile(_.id != b).filterNot(_.id == id).lastOption.map(_.id)))
     Flip.animate(s.data.v.foreach(b => s.data := Some(b.copy(tasks = Dnd.reinsert(b.tasks, id, after, before)(_.copy(sprintId = sprint))))))
-    Api.moveTask(id, MoveTaskReq(None, sprint, Option.when(sprint.isEmpty)(true), after, before)).failed.foreach { err => Store.error(err); load(s) }
+    Api.moveTask(id, MoveTaskReq(None, sprint, Option.when(sprint.isEmpty)(true), after, before)).failed.foreach { err => Toasts.error(err); load(s) }
   }
 }
 
@@ -76,19 +76,19 @@ def save(s: State): Unit = pid.foreach { p =>
     case Some(sp) => Api.putUnit(s"/api/projects/$p/sprints/${sp.id}", r.asJson)
     case None     => Api.post[SprintDto](s"/api/projects/$p/sprints", r.asJson).map(_ => ())
   }
-  Store.report(f) { _ => s.editing := None; Store.reloadMeta(); load(s) }
+  Toasts.report(f) { _ => s.editing := None; Store.reloadMeta(); load(s) }
 }
 
 def start(s: State, sp: SprintDto): Unit = pid.foreach { p =>
-  Store.report(Api.post[SprintDto](s"/api/projects/$p/sprints/${sp.id}/start")) { _ =>
-    Store.toast(s"「${sp.name}」を開始しました", Store.meta.v.map(m => s"/p/${m.project.key}/board"))
+  Toasts.report(Api.post[SprintDto](s"/api/projects/$p/sprints/${sp.id}/start")) { _ =>
+    Toasts.show(s"「${sp.name}」を開始しました", Store.meta.v.map(m => s"/p/${m.project.key}/board"))
     Store.reloadMeta(); load(s)
   }
 }
 
 def remove(s: State, sp: SprintDto): Unit = pid.foreach { p =>
   Dialog.confirm(s"「${sp.name}」を削除しますか？（タスクはバックログに戻ります）") {
-    Store.report(Api.delete(s"/api/projects/$p/sprints/${sp.id}")) { _ => Store.reloadMeta(); load(s) }
+    Toasts.report(Api.delete(s"/api/projects/$p/sprints/${sp.id}")) { _ => Store.reloadMeta(); load(s) }
   }
 }
 

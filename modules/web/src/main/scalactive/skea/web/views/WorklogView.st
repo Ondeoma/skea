@@ -29,7 +29,7 @@ def initState() = {
 }
 
 def load(s: State): Unit =
-  Store.report(Api.worklogReport(s.from.v, s.to.v, Option(s.project.v).filter(_.nonEmpty).map(UUID.fromString),
+  Toasts.report(Api.worklogReport(s.from.v, s.to.v, Option(s.project.v).filter(_.nonEmpty).map(UUID.fromString),
     Option(s.user.v).filter(_.nonEmpty).map(UUID.fromString)))(s.list := _)
 
 def mounted(s: State): Unit = {
@@ -119,7 +119,7 @@ def tab(s: State, v: String) = s.view.mapC(x => if (x == v) "active" else "")
       <input type="date" v-model="s.from" @change="load(s)"> 〜 <input type="date" v-model="s.to" @change="load(s)">
       <button class="small" @click="shift(s, 7)">次の週 →</button>
       <button class="small" @click="thisMonth(s)">今月</button>
-      <Combo :bind="Some(s.user)" :live="Some(s.users.mapC(Opt.users))" clearLabel="全員" :onChange="_ => load(s)" />
+      <Combo :bind="Some(s.user)" :live="Some(s.users.mapC(Opts.users))" clearLabel="全員" :onChange="_ => load(s)" />
       <Combo :bind="Some(s.project)" :live="Some(Store.projects.mapC(_.map(p => Opt(p.id.toString, p.key + &quot; &quot; + p.name))))" clearLabel="すべてのプロジェクト"
         :onChange="_ => load(s)" />
       <span class="grow"></span>
@@ -135,7 +135,7 @@ def tab(s: State, v: String) = s.view.mapC(x => if (x == v) "active" else "")
         <thead><tr><th>メンバー / タスク</th><th v-for="d in days(s)" :class="weekend(d)">{{ dayHead(d) }}</th><th class="num">合計(h)</th></tr></thead>
         <tbody>
           <template v-for="p in people(s)">
-            <tr class="person"><td><Avatar :user="Some(p._1)" :size="20" /> <b>{{ p._1.name }}</b></td>
+            <tr class="person"><td><Avatar :user="Some(person(p._1))" :size="20" /> <b>{{ p._1.name }}</b></td>
               <td v-for="m in p._2" class="num"><b>{{ cell(m) }}</b></td><td class="num"><b>{{ Minutes.hours(p._3) }}</b></td></tr>
             <tr v-for="t in tasksOf(s, p._1.id)">
               <td class="task"><RouterLink :to='"/tasks/" + t._1.taskKey' class="key">{{ t._1.taskKey }}</RouterLink> {{ t._1.taskTitle }}</td>
@@ -164,7 +164,7 @@ def tab(s: State, v: String) = s.view.mapC(x => if (x == v) "active" else "")
       <section v-for="d in byDay(s)" class="day">
         <h3>{{ Fmt.day(d._1) }} <span class="muted small">{{ Minutes.format(d._2.map(_.minutes).sum) }}</span></h3>
         <div v-for="w in d._2" class="wrow">
-          <Avatar :user="Some(w.user)" :size="22" />
+          <Avatar :user="Some(person(w.user))" :size="22" />
           <span class="who">{{ w.user.name }}</span>
           <a href="#" class="mins" title="クリックで編集" @click.prevent="openLog(s, w)"><b>{{ Minutes.format(w.minutes) }}</b></a>
           <RouterLink :to='"/tasks/" + w.taskKey' class="key">{{ w.taskKey }}</RouterLink>

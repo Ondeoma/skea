@@ -15,9 +15,9 @@ def initState() = Store.meta.v.fold(State())(m =>
 def pid = Store.meta.v.map(_.project.id)
 
 def save(s: State): Unit = pid.foreach { p =>
-  Store.report(Api.patchUnit(s"/api/projects/$p",
+  Toasts.report(Api.patchUnit(s"/api/projects/$p",
     UpdateProjectReq(Some(s.name.v), Some(s.desc.v), Option(s.lead.v).filter(_.nonEmpty).map(UUID.fromString), None).asJson)) { _ =>
-    Store.toast("保存しました")
+    Toasts.show("保存しました")
     Store.loadProjects()
     Store.reloadMeta()
   }
@@ -33,7 +33,7 @@ def key = Store.meta.mapC(_.map(_.project.key).getOrElse(""))
     <label class="field"><span>キー（変更できません）</span><input type="text" :value="key" disabled></label>
     <label class="field"><span>名前</span><input type="text" v-model="s.name"></label>
     <label class="field"><span>説明</span><textarea v-model="s.desc"></textarea></label>
-    <div class="field"><span>リーダー</span><Combo :bind="Some(s.lead)" :live="Some(members.mapC(Opt.users))" clearLabel="なし" /></div>
+    <div class="field"><span>リーダー</span><Combo :bind="Some(s.lead)" :live="Some(members.mapC(Opts.users))" clearLabel="なし" /></div>
     <button class="primary" @click="save(s)">保存</button>
   </section>
 </template>

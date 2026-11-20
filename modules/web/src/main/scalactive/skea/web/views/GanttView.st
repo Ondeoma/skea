@@ -208,8 +208,15 @@ def critBtn(s: State) = s.critical.mapC(c => if (c) "small active-btn" else "sma
 
 final case class Drag(t: TaskDto, mode: String, x0: Double, a: String, b: String)
 private var drag: Option[Drag] = None
-private var moveL: js.Function1[dom.MouseEvent, Unit] = null
-private var upL: js.Function1[dom.MouseEvent, Unit] = null
+/** ドラッグの間だけ、画面全体のポインターの動きを受ける（離したら外して up を呼ぶ）. */
+private def dragging(move: dom.MouseEvent => Unit)(up: dom.MouseEvent => Unit): Unit = {
+  val mv = useEventListener[dom.MouseEvent](dom.window, "pointermove")(move)
+  lazy val upH: EffectHandle = useEventListener[dom.MouseEvent](dom.window, "pointerup") { ev =>
+    mv.stop(); upH.stop(); up(ev)
+  }
+  upH
+  ()
+}
 
 
 def down(s: State, t: TaskDto, mode: String, e: dom.Event): Unit = if (Store.canEdit.v) span(s, t).foreach { (a, b) =>
@@ -217,7 +224,7 @@ def down(s: State, t: TaskDto, mode: String, e: dom.Event): Unit = if (Store.can
   me.preventDefault()
   me.stopPropagation()
   drag = Some(Drag(t, mode, me.clientX, a, b))
-  moveL = (ev: dom.MouseEvent) => drag.foreach { d =>
+  dragging((ev: dom.MouseEvent) => drag.foreach { d =>
     val n = math.round((ev.clientX - d.x0) / s.dayW.v).toInt
     val (na, nb) = d.mode match {
       case "start" => (if (plus(d.a, n) > d.b) d.b else plus(d.a, n), d.b)
@@ -230,10 +237,7 @@ def down(s: State, t: TaskDto, mode: String, e: dom.Event): Unit = if (Store.can
       val next = if (s.shiftNext.v && d.mode != "start") downstream(s, d.t.id).flatMap(t => spanOf(t).map(x => t.id -> (plus(x._1, delta), plus(x._2, delta)))) else Nil
       s.preview := (s.preview.v -- downstream(s, d.t.id).map(_.id)).updated(d.t.id, (na, nb)) ++ next.filter(_ => delta != 0)
     }
-  }
-  upL = (_: dom.MouseEvent) => {
-    dom.window.removeEventListener("pointermove", moveL)
-    dom.window.removeEventListener("pointerup", upL)
+  }) { (_: dom.MouseEvent) =>
     drag.foreach { d =>
       s.preview.v.get(d.t.id) match {
         case Some((na, nb)) if (na, nb) != (d.a, d.b) =>
@@ -246,8 +250,8 @@ def down(s: State, t: TaskDto, mode: String, e: dom.Event): Unit = if (Store.can
               t.startDate.map(_ => "startDate" -> p._1.asJson), t.dueDate.map(_ => "dueDate" -> p._2.asJson)).flatten*))
           }
           Api.updateTask(d.t.id, body).flatMap(_ => scala.concurrent.Future.sequence(shifted)).onComplete { r =>
-            r.failed.foreach(Store.error)
-            if (others.nonEmpty && r.isSuccess) Store.toast(s"後続のタスク ${others.size} 件も一緒にずらしました")
+            r.failed.foreach(Toasts.error)
+            if (others.nonEmpty && r.isSuccess) Toasts.show(s"後続のタスク ${others.size} 件も一緒にずらしました")
             s.preview := Map.empty
             load(s)
             Store.changed()
@@ -257,8 +261,6 @@ def down(s: State, t: TaskDto, mode: String, e: dom.Event): Unit = if (Store.can
     }
     drag = None
   }
-  dom.window.addEventListener("pointermove", moveL)
-  dom.window.addEventListener("pointerup", upL)
 }
 
 
@@ -280,24 +282,19 @@ def linkStart(s: State, t: TaskDto, e: dom.Event): Unit = if (Store.canEdit.v) s
   val x1 = (diff(from, b) + 1) * s.dayW.v - 4.0
   val y1 = i * RowH + RowH / 2.0
   s.linking := Some(Link(t, x1, y1, x1, y1))
-  moveL = (ev: dom.MouseEvent) => gridRect().foreach { g =>
+  dragging((ev: dom.MouseEvent) => gridRect().foreach { g =>
     s.linking := s.linking.v.map(_.copy(x2 = ev.clientX - g.left, y2 = ev.clientY - g.top))
-  }
-  upL = (ev: dom.MouseEvent) => {
-    dom.window.removeEventListener("pointermove", moveL)
-    dom.window.removeEventListener("pointerup", upL)
+  }) { (ev: dom.MouseEvent) =>
     val target = Option(dom.document.elementFromPoint(ev.clientX, ev.clientY)).flatMap(el => Option(el.closest("[data-bar]")))
       .map(_.getAttribute("data-bar")).filter(_ != t.id.toString)
     s.linking := None
     target.flatMap(id => s.data.v.toList.flatMap(_.tasks).find(_.id.toString == id)).foreach { succ =>
-      Store.report(Api.postUnit(s"/api/tasks/${succ.id}/dependencies", CreateDependencyReq(t.key, None).asJson)) { _ =>
-        Store.toast(s"${t.key} → ${succ.key} の依存関係をつなぎました")
+      Toasts.report(Api.postUnit(s"/api/tasks/${succ.id}/dependencies", CreateDependencyReq(t.key, None).asJson)) { _ =>
+        Toasts.show(s"${t.key} → ${succ.key} の依存関係をつなぎました")
         load(s); Store.changed()
       }
     }
   }
-  dom.window.addEventListener("pointermove", moveL)
-  dom.window.addEventListener("pointerup", upL)
 }
 
 /** 矢印のクリック: 依存関係を外す. */
@@ -308,7 +305,7 @@ def arrowClick(s: State, e: dom.Event): Unit = if (Store.canEdit.v) {
       val ts  = s.data.v.toList.flatMap(_.tasks)
       val key = (id: String) => ts.find(_.id.toString == id).map(_.key).getOrElse("")
       Dialog.confirm(s"${key(p)} → ${key(c)} の依存関係を外しますか？", "外す") {
-        Store.report(Api.delete(s"/api/tasks/$c/dependencies/$p")) { _ => load(s); Store.changed() }
+        Toasts.report(Api.delete(s"/api/tasks/$c/dependencies/$p")) { _ => load(s); Store.changed() }
       }
     case _ => ()
   }
@@ -338,19 +335,16 @@ def msDown(s: State, m: MilestoneDto, e: dom.Event): Unit = {
   pe.preventDefault()
   val x0 = pe.clientX
   var moved = false
-  moveL = (ev: dom.MouseEvent) => {
+  dragging((ev: dom.MouseEvent) => {
     val n = math.round((ev.clientX - x0) / s.dayW.v).toInt
     if (n != 0) moved = true
     if (Store.canEdit.v) s.msPreview := s.msPreview.v.updated(m.id, plus(m.date, n))
-  }
-  upL = (_: dom.MouseEvent) => {
-    dom.window.removeEventListener("pointermove", moveL)
-    dom.window.removeEventListener("pointerup", upL)
+  }) { (_: dom.MouseEvent) =>
     s.msPreview.v.get(m.id).filter(d => moved && d != m.date) match {
       case Some(d) => Store.meta.v.foreach { meta =>
           Api.putUnit(s"/api/projects/${meta.project.id}/milestones/${m.id}", MilestoneReq(m.name, d, Some(m.color)).asJson).onComplete { r =>
-            r.failed.foreach(Store.error)
-            if (r.isSuccess) Store.toast(s"「${m.name}」を ${Fmt.day(d)} に移しました")
+            r.failed.foreach(Toasts.error)
+            if (r.isSuccess) Toasts.show(s"「${m.name}」を ${Fmt.day(d)} に移しました")
             s.msPreview := s.msPreview.v - m.id
             load(s); Store.changed()
           }
@@ -358,8 +352,6 @@ def msDown(s: State, m: MilestoneDto, e: dom.Event): Unit = {
       case None => s.msPreview := s.msPreview.v - m.id; if (!moved) editMs(s, Some(m))
     }
   }
-  dom.window.addEventListener("pointermove", moveL)
-  dom.window.addEventListener("pointerup", upL)
 }
 
 // ---------------------------------------------------------------- 日付のないタスクに日付を入れる
@@ -371,8 +363,8 @@ def openDating(s: State, t: TaskDto): Unit = if (Store.canEdit.v) {
 }
 
 def saveDating(s: State): Unit = s.dating.v.foreach { t =>
-  if (s.dStart.v.nonEmpty && s.dDue.v.nonEmpty && s.dDue.v < s.dStart.v) Store.toast("期日は開始日より後にしてください", error = true)
-  else Store.report(Api.updateTask(t.id, Json.obj("startDate" -> optS(s.dStart.v), "dueDate" -> optS(s.dDue.v), "version" -> t.version.asJson))) { _ =>
+  if (s.dStart.v.nonEmpty && s.dDue.v.nonEmpty && s.dDue.v < s.dStart.v) Toasts.show("期日は開始日より後にしてください", error = true)
+  else Toasts.report(Api.updateTask(t.id, Json.obj("startDate" -> optS(s.dStart.v), "dueDate" -> optS(s.dDue.v), "version" -> t.version.asJson))) { _ =>
     s.dating := None
     load(s); Store.changed()
   }
@@ -394,13 +386,13 @@ def saveMs(s: State): Unit = Store.meta.v.foreach { meta =>
     case Some(m) => Api.putUnit(s"/api/projects/${meta.project.id}/milestones/${m.id}", r.asJson)
     case None    => Api.post[MilestoneDto](s"/api/projects/${meta.project.id}/milestones", r.asJson).map(_ => ())
   }
-  Store.report(f) { _ => s.msEdit := None; load(s); Store.changed() }
+  Toasts.report(f) { _ => s.msEdit := None; load(s); Store.changed() }
 }
 
 def removeMs(s: State): Unit = (Store.meta.v, s.msEdit.v.flatten) match {
   case (Some(meta), Some(m)) =>
     Dialog.confirm(s"マイルストーン「${m.name}」を削除しますか？", "削除する") {
-      Store.report(Api.delete(s"/api/projects/${meta.project.id}/milestones/${m.id}")) { _ => s.msEdit := None; load(s); Store.changed() }
+      Toasts.report(Api.delete(s"/api/projects/${meta.project.id}/milestones/${m.id}")) { _ => s.msEdit := None; load(s); Store.changed() }
     }
   case _ => ()
 }
@@ -485,7 +477,7 @@ def scrollToday(): Unit = Option(dom.document.querySelector(".gantt .right")).fo
       <form @submit.prevent="saveMs(s)">
         <h2>{{ msTitle(s) }}</h2>
         <p class="muted small">リリース日など、タスクに紐付かない目印をガントチャートに表示します。</p>
-        <label class="field"><span>名前</span><input type="text" v-model="s.msName" placeholder="v1.0 リリース" autofocus></label>
+        <label class="field"><span>名前</span><input type="text" v-model="s.msName" placeholder="v1.0 リリース" v-focus></label>
         <div class="row">
           <label class="field grow"><span>日付</span><input type="date" v-model="s.msDate"></label>
           <label class="field"><span>色</span><input type="color" v-model="s.msColor"></label>

@@ -12,14 +12,14 @@ def initState() = State()
 def labels = Store.meta.mapC(_.map(_.labels).getOrElse(Nil))
 
 def save(l: LabelDto, name: String, color: String): Unit =
-  Store.report(Api.putUnit(s"/api/projects/${Store.pid}/labels/${l.id}", LabelReq(name, Some(color)).asJson))(_ => Store.reloadMeta())
+  Toasts.report(Api.putUnit(s"/api/projects/${Store.pid}/labels/${l.id}", LabelReq(name, Some(color)).asJson))(_ => Store.reloadMeta())
 
 def add(s: State): Unit =
-  Store.report(Api.post[LabelDto](s"/api/projects/${Store.pid}/labels", LabelReq(s.name.v, Some(s.color.v)).asJson)) { _ => s.name := ""; Store.reloadMeta() }
+  Toasts.report(Api.post[LabelDto](s"/api/projects/${Store.pid}/labels", LabelReq(s.name.v, Some(s.color.v)).asJson)) { _ => s.name := ""; Store.reloadMeta() }
 
 def remove(l: LabelDto): Unit =
   Dialog.confirm(s"ラベル「${l.name}」を削除しますか？（タスクからも外れます）") {
-    Store.report(Api.delete(s"/api/projects/${Store.pid}/labels/${l.id}"))(_ => Store.reloadMeta())
+    Toasts.report(Api.delete(s"/api/projects/${Store.pid}/labels/${l.id}"))(_ => Store.reloadMeta())
   }
 </script>
 

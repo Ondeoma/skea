@@ -23,7 +23,7 @@ def mounted(s: State): Unit = {
 <template>
   <div class="page narrow">
     <div v-for="e in s.list" :key="e.id" class="ev">
-      <Avatar :user="e.actor" :size="26" />
+      <Avatar :user="e.actor.map(person)" :size="26" />
       <div class="grow">
         <b>{{ Store.actorName(e) }}</b> さんが
         <RouterLink v-if="e.taskKey.isDefined" :to='"/tasks/" + e.taskKey.getOrElse("")'>{{ EventText.describe(e.kind, e.detail, e.taskKey) }}</RouterLink>

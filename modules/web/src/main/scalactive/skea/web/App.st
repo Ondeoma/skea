@@ -54,7 +54,7 @@ def mounted(s: State): Unit = {
   Api.clientConfig().foreach { c =>
     Store.config := Some(c)
     // skiwi・skawau と連携していれば、そのリンクに名前を出す（ログインせずに見られる窓口の案内では読まない）
-    if (c.linkServices.nonEmpty && !isPortal(dom.window.location.pathname)) LinkTitles.load()
+    if (c.linkServices.nonEmpty && !isPortal(dom.window.location.pathname)) loadLinkTitles()
   }
   val path = dom.window.location.pathname
   if (path.startsWith("/login")) s.ready := true
@@ -62,7 +62,7 @@ def mounted(s: State): Unit = {
     case Some(me) => start(s, me)
     case None     => s.ready := true
   }
-  else Store.report(Api.me())(me => start(s, me))
+  else Toasts.report(Api.me())(me => start(s, me))
 }
 
 def search(s: State): Unit = {
@@ -80,7 +80,7 @@ def currentKey(href: String): String = {
 
 
 def userName = Store.me.mapC(_.map(_.name).getOrElse(""))
-def meBrief = Store.me.mapC(_.map(m => UserBrief(m.id, m.name, m.avatarUrl)))
+def meBrief = Store.me.mapC(_.map(m => Person(m.id.toString, m.name, m.avatarUrl)))
 def unreadLabel = Store.unread.mapC(u => if (u.unread > 99) "99+" else u.unread.toString)
 def hasUnread = Store.unread.mapC(_.unread > 0)
 def loggedIn = Store.me.mapC(_.isDefined)
@@ -102,7 +102,6 @@ def hasPortals = Store.helpProjects.mapC(_.nonEmpty)
       <input type="search" v-model="s.q" placeholder="タスクを検索（例: ログイン assignee:me）">
     </form>
     <RouterLink v-if="agentUi" to="/search" class="only-sp"><span class="icon">🔍</span></RouterLink>
-    <!-- RouterLink の a には scoped の CSS が届かないので、中の span に当てる -->
     <RouterLink v-if="loggedIn" to="/notifications">
       <span class="icon bell" title="通知">🔔<span v-if="hasUnread" class="dot">{{ unreadLabel }}</span></span>
     </RouterLink>
@@ -124,12 +123,7 @@ def hasPortals = Store.helpProjects.mapC(_.nonEmpty)
   </main>
   <CreateTaskDialog />
   <DialogHost />
-  <div class="toasts">
-    <div v-for="t in Store.toasts" :key="t.id" :class='if (t.error) "toast error" else "toast"'>
-      <span class="grow" @click="t.link.foreach(l => Router.go(l)); Store.dismiss(t.id)">{{ t.text }}</span>
-      <button @click="Store.dismiss(t.id)">×</button>
-    </div>
-  </div>
+  <ToastHost />
 </template>
 
 <style scoped>

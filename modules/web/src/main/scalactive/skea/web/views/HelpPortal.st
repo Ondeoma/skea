@@ -17,7 +17,7 @@ case class State(portal: RV[Option[HelpPortalDto]] = RV(None),
                  asking: RV[Boolean] = RV(false),
                  title: RV[String] = RV(""),
                  editor: RV[Option[EditorHandle]] = RV(None),
-                 busy: RV[Boolean] = RV(false),
+                 act: ActionState,
                  shareOpts: RV[List[HelpShareItemDto]] = RV(Nil),
                  shareSel: RV[List[java.util.UUID]] = RV(Nil),
                  form: RV[List[CustomFieldDto]] = RV(Nil),
@@ -26,7 +26,7 @@ case class State(portal: RV[Option[HelpPortalDto]] = RV(None),
                  values: scala.collection.mutable.Map[String, io.circe.Json] = scala.collection.mutable.Map.empty,
                  error: RV[String] = RV(""))
 
-def initState() = State()
+def initState() = State(act = useAction())
 
 def load(s: State, props: Props): Unit =
   Api.portal(props.key).foreach {
@@ -39,7 +39,7 @@ def load(s: State, props: Props): Unit =
       else if (Store.me.v.isDefined && p.guestSignup && joinRequested) join(s, props)
   }
 
-def joinRequested: Boolean = new dom.URL(dom.window.location.href).searchParams.get("join") == "1"
+def joinRequested: Boolean = Router.queryParam("join").v.contains("1")
 
 /** ログインの戻り先に付けた ?join=1 を外す（元の窓口の URL にする）. */
 def cleanUrl(props: Props): Unit =
@@ -59,30 +59,27 @@ def join(s: State, props: Props): Unit =
       s.portal := Some(p)
       cleanUrl(props)
       Store.loadAll()
-      Store.toast("窓口に登録しました")
+      Toasts.show("窓口に登録しました")
     case Failure(e) =>
       cleanUrl(props)
       s.error := e.getMessage
   }
 
 def submit(s: State): Unit = (s.portal.v, s.editor.v) match {
-  case (Some(p), Some(ed)) if s.title.v.trim.nonEmpty && !s.busy.v =>
-    s.busy := true
+  case (Some(p), Some(ed)) if s.title.v.trim.nonEmpty && !s.act.busy.v =>
     val desc = if (ed.isEmpty()) None else Some(Editor.fromJs(ed.getJSON()))
-    Api.createRequest(p.projectId, HelpRequestReq(s.title.v.trim, desc, Option(s.shareSel.v).filter(_.nonEmpty), Option(s.values.toMap).filter(_.nonEmpty))).onComplete {
+    s.act.run(Api.createRequest(p.projectId, HelpRequestReq(s.title.v.trim, desc, Option(s.shareSel.v).filter(_.nonEmpty), Option(s.values.toMap).filter(_.nonEmpty)))).onComplete {
       case Success(t) =>
-        s.busy := false
         s.asking := false
         s.title := ""
         s.shareSel := Nil
         s.values.clear()
-        Store.toast(s"${t.key} で受け付けました")
+        Toasts.show(s"${t.key} で受け付けました")
         Router.go(s"/help/t/${t.key}")
       case Failure(e) =>
-        s.busy := false
-        Store.error(e)
+        Toasts.error(e)
     }
-  case (_, _) if s.title.v.trim.isEmpty => Store.toast("件名を入力してください", error = true)
+  case (_, _) if s.title.v.trim.isEmpty => Toasts.show("件名を入力してください", error = true)
   case _ => ()
 }
 
@@ -141,7 +138,7 @@ def desc(s: State) = s.portal.mapC(_.map(_.description).getOrElse(""))
         </div>
         <form v-if="s.asking" class="card ask" @submit.prevent="submit(s)">
           <h2>新しい問い合わせ</h2>
-          <label class="field"><span>件名</span><input type="text" v-model="s.title" placeholder="例: ログインできません" autofocus></label>
+          <label class="field"><span>件名</span><input type="text" v-model="s.title" placeholder="例: ログインできません" v-focus></label>
           <div class="field"><span>内容</span>
             <RichEditor placeholder="状況をできるだけ詳しく書いてください（画像・ファイルはドロップか貼り付けで添付できます）"
               :uploadUrl='s.portal.v.map(p => "/api/help/projects/" + p.projectId + "/uploads")' :onReady="h => s.editor := Some(h)" :onSubmit="_ => submit(s)" />
@@ -158,7 +155,7 @@ def desc(s: State) = s.portal.mapC(_.map(_.description).getOrElse(""))
           </div>
           <div class="row actions"><span class="grow"></span>
             <button type="button" @click="s.asking := false">キャンセル</button>
-            <button type="submit" class="primary" :disabled="s.busy">送信する</button>
+            <button type="submit" class="primary" :disabled="s.act.busy">送信する</button>
           </div>
         </form>
 

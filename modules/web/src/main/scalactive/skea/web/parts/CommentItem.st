@@ -17,7 +17,7 @@ case class State(editor: RV[Option[EditorHandle]] = RV(None), picker: RV[Boolean
 def initState() = State()
 
 def save(s: State, props: Props): Unit = s.editor.v.foreach { ed =>
-  Store.report(Api.updateComment(props.c.id, Editor.fromJs(ed.getJSON()))) { n =>
+  Toasts.report(Api.updateComment(props.c.id, Editor.fromJs(ed.getJSON()))) { n =>
     props.onEdit(None)
     props.onChanged(n.copy(reactions = props.c.reactions))
   }
@@ -25,7 +25,7 @@ def save(s: State, props: Props): Unit = s.editor.v.foreach { ed =>
 
 def remove(props: Props): Unit =
   Dialog.confirm("このコメントを削除しますか？", "削除する") {
-    Store.report(Api.delete(s"/api/comments/${props.c.id}")) { _ => props.onRemoved(props.c.id); Store.changed() }
+    Toasts.report(Api.delete(s"/api/comments/${props.c.id}")) { _ => props.onRemoved(props.c.id); Store.changed() }
   }
 
 /** コメントの URL（タスクの画面の URL. モーダルで開いていても同じ）. */
@@ -35,7 +35,7 @@ def copyLink(props: Props): Unit = {
   dom.window.navigator.clipboard.writeText(dom.window.location.origin + link(props))
   // タスクの画面のときだけアドレスバーにも付ける（カンバンなどのモーダルでは URL を変えない）
   if (dom.window.location.pathname == s"/tasks/${props.taskKey}") dom.window.history.replaceState(null, "", s"#comment-${props.c.id}")
-  Store.toast("コメントへのリンクをコピーしました")
+  Toasts.show("コメントへのリンクをコピーしました")
 }
 
 /** リアクションを付ける・外す（自分が付けていれば外す）. */
@@ -45,7 +45,7 @@ def react(s: State, props: Props, emoji: String): Unit = {
   val f = if (on) Api.post[List[ReactionDto]](s"/api/comments/${props.c.id}/reactions", ReactionReq(emoji).asJson)
           else Api.send(dom.HttpMethod.DELETE, s"/api/comments/${props.c.id}/reactions?emoji=${Api.enc(emoji)}").flatMap(_ =>
             Api.get[List[CommentDto]](s"/api/tasks/${props.taskId}/comments").map(_.find(_.id == props.c.id).map(_.reactions).getOrElse(Nil)))
-  Store.report(f)(rs => props.onChanged(props.c.copy(reactions = rs)))
+  Toasts.report(f)(rs => props.onChanged(props.c.copy(reactions = rs)))
 }
 
 def mine(props: Props): Boolean = props.c.author.exists(a => Store.myId.contains(a.id))
@@ -65,7 +65,7 @@ def viaLabel(c: CommentDto): String = c.via match {
 
 <template>
   <div :id='"comment-" + props.c.id' :class="cls(props)">
-    <Avatar :user="props.c.author" :size="30" />
+    <Avatar :user="props.c.author.map(person)" :size="30" />
     <div class="body">
       <div class="head">
         <b>{{ props.c.author.map(_.name).getOrElse("（削除されたユーザー）") }}</b>
@@ -76,7 +76,7 @@ def viaLabel(c: CommentDto): String = c.via match {
         <button v-if="mine(props) && props.canEdit" class="ghost small" @click="props.onEdit(Some(props.c.id))">編集</button>
         <button v-if="(mine(props) || props.isAdmin) && props.canEdit" class="ghost small" @click="remove(props)">削除</button>
       </div>
-      <div v-if="!props.editing" class="rich" v-html="props.c.html"></div>
+      <div v-if="!props.editing" class="rich" v-html="props.c.html" v-rich="props.c.html"></div>
       <div v-if="props.editing">
         <RichEditor :content="Some(props.c.body)" :projectId="Some(props.projectId)" :taskId="Some(props.taskId)" :autofocus="true"
           :onReady="h => s.editor := Some(h)" :onSubmit="_ => save(s, props)" />
@@ -88,7 +88,7 @@ def viaLabel(c: CommentDto): String = c.via match {
           <template v-else>{{ r.emoji }}</template> {{ r.users.size }}</button>
         <span class="pick-wrap">
           <button class="ghost small add-react" title="リアクション" @click="s.picker := !s.picker.v">☺＋</button>
-          <EmojiPicker v-if="s.picker" :onPick="e => react(s, props, e)" :onClose="_ => s.picker := false" />
+          <EmojiPicker :categories="Reactions.categories" v-if="s.picker" :onPick="e => react(s, props, e)" :onClose="_ => s.picker := false" />
         </span>
       </div>
     </div>

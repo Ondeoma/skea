@@ -60,19 +60,19 @@ def save(s: State, props: Props): Unit = {
     case Some(t) => Api.putUnit(s"/api/templates/${t.id}", r.asJson)
     case None    => Api.post[TemplateDto](listUrl(props), r.asJson).map(_ => ())
   }
-  Store.report(f) { _ => s.editing := None; load(s, props); props.onChanged(()) }
+  Toasts.report(f) { _ => s.editing := None; load(s, props); props.onChanged(()) }
 }
 
 def remove(s: State, props: Props, t: TemplateDto): Unit = {
   val note = if (props.personal) "" else "（このテンプレートの繰り返しタスクも削除されます）"
   Dialog.confirm(s"テンプレート「${t.name}」を削除しますか？$note", "削除する") {
-    Store.report(Api.delete(s"/api/templates/${t.id}")) { _ => load(s, props); props.onChanged(()) }
+    Toasts.report(Api.delete(s"/api/templates/${t.id}")) { _ => load(s, props); props.onChanged(()) }
   }
 }
 
 def createFrom(t: TemplateDto): Unit =
-  Store.report(Api.post[TaskDto](s"/api/templates/${t.id}/tasks")) { task =>
-    Store.toast(s"${task.key} を作成しました", Some(s"/tasks/${task.key}"))
+  Toasts.report(Api.post[TaskDto](s"/api/templates/${t.id}/tasks")) { task =>
+    Toasts.show(s"${task.key} を作成しました", Some(s"/tasks/${task.key}"))
     Store.changed()
   }
 
@@ -119,10 +119,10 @@ def empty(s: State) = s.templates.mapC(_.isEmpty)
           <RichEditor :content="descContent(s)" :projectId="projectId(props)" placeholder="タスクの説明の初期値" :onReady="h => s.desc := Some(h)" />
         </div>
         <div class="grid2">
-          <div class="field"><span>種類</span><Combo :bind="Some(s.taskType)" :options="Opt.types" clearLabel="既定" /></div>
-          <div class="field"><span>優先度</span><Combo :bind="Some(s.priority)" :options="Opt.priorities" clearLabel="既定" /></div>
-          <div v-if="inProject(props)" class="field"><span>ステータス</span><Combo :bind="Some(s.status)" :live="Some(statuses.mapC(Opt.statuses))" clearLabel="既定" /></div>
-          <div v-if="inProject(props)" class="field"><span>担当者</span><Combo :bind="Some(s.assignee)" :live="Some(members.mapC(Opt.users))" clearLabel="未割り当て" /></div>
+          <div class="field"><span>種類</span><Combo :bind="Some(s.taskType)" :options="Opts.types" clearLabel="既定" /></div>
+          <div class="field"><span>優先度</span><Combo :bind="Some(s.priority)" :options="Opts.priorities" clearLabel="既定" /></div>
+          <div v-if="inProject(props)" class="field"><span>ステータス</span><Combo :bind="Some(s.status)" :live="Some(statuses.mapC(Opts.statuses))" clearLabel="既定" /></div>
+          <div v-if="inProject(props)" class="field"><span>担当者</span><Combo :bind="Some(s.assignee)" :live="Some(members.mapC(Opts.users))" clearLabel="未割り当て" /></div>
           <label class="field"><span>期日（作成日から何日後. 空ならなし）</span><input type="number" min="0" max="3650" v-model="s.due"></label>
         </div>
         <div v-if="inProject(props)" class="field"><span>ラベル</span>

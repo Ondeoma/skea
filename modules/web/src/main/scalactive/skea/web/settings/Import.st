@@ -5,19 +5,15 @@ import io.circe.syntax.*
 import org.scalajs.dom
 import skea.shared.*
 
-import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
-import scala.scalajs.js
-import scala.util.{Failure, Success}
-
 // CSV・Jira（課題を CSV で書き出したもの）からの取り込み. 列の対応は見出しから推し、画面で直せる.
 case class State(fileName: RV[String] = RV(""),
                  headers: RV[List[String]] = RV(Nil),
                  rows: RV[List[List[String]]] = RV(Nil),
                  mapping: RV[Map[String, String]] = RV(Map.empty),
                  result: RV[Option[(Boolean, ImportResultDto)]] = RV(None),
-                 busy: RV[Boolean] = RV(false))
+                 act: ActionState)
 
-def initState() = State()
+def initState() = State(act = useAction())
 
 /** 取り込む項目と、その見出しの候補（大文字小文字は区別しない）. */
 val targets: List[(String, String, List[String])] = List(
@@ -50,8 +46,7 @@ def guess(headers: List[String]): Map[String, String] = {
 def isJira(s: State) = s.headers.mapC(h => h.exists(_.trim.equalsIgnoreCase("Issue key")))
 
 def pick(s: State, e: dom.Event): Unit = {
-  val input = e.target.asInstanceOf[dom.HTMLInputElement]
-  Option(input.files).filter(_.length > 0).map(_(0)).foreach { file =>
+  Dom.takeFiles(e).headOption.foreach { file =>
     val reader = new dom.FileReader()
     reader.onload = (_: dom.Event) => {
       val all = Csv.parse(reader.result.asInstanceOf[String])
@@ -60,7 +55,6 @@ def pick(s: State, e: dom.Event): Unit = {
       s.rows := all.drop(1)
       s.mapping := guess(all.headOption.getOrElse(Nil))
       s.result := None
-      input.value = ""
     }
     reader.readAsText(file, "UTF-8")
   }
@@ -85,15 +79,11 @@ def build(s: State): List[ImportRow] = {
 
 def run(s: State, dryRun: Boolean): Unit = {
   val rows = build(s)
-  if (rows.isEmpty) Store.toast("取り込む行がありません（タイトルの列を選んでください）", error = true)
+  if (rows.isEmpty) Toasts.show("取り込む行がありません（タイトルの列を選んでください）", error = true)
   else {
-    s.busy := true
-    Api.post[ImportResultDto](s"/api/projects/${Store.pid}/import", ImportReq(rows, dryRun).asJson).onComplete {
-      case Success(r) =>
-        s.busy := false
-        s.result := Some((dryRun, r))
-        if (!dryRun) { Store.toast(s"${r.created} 件のタスクを取り込みました"); Store.reloadMeta(); Store.changed() }
-      case Failure(e) => s.busy := false; Store.error(e)
+    Toasts.report(s.act.run(Api.post[ImportResultDto](s"/api/projects/${Store.pid}/import", ImportReq(rows, dryRun).asJson))) { r =>
+      s.result := Some((dryRun, r))
+      if (!dryRun) { Toasts.show(s"${r.created} 件のタスクを取り込みました"); Store.reloadMeta(); Store.changed() }
     }
   }
 }
@@ -109,11 +99,7 @@ def template(): Unit = {
   val head = List("タイトル", "ID", "親", "説明", "ステータス", "担当者", "報告者", "ラベル", "開始日", "期日", "スプリント").map(Csv.quote).mkString(",")
   val ex = List("ログイン画面を作る", "A-1", "", "画面の設計と実装", "進行中", "", "", "UI,画面", "2026-11-16", "2026-11-30", "").map(Csv.quote).mkString(",")
   val ex2 = List("パスワードの再設定", "A-2", "A-1", "", "作業前", "", "", "", "", "2026-12-05", "").map(Csv.quote).mkString(",")
-  val blob = new dom.Blob(js.Array[dom.BlobPart]("﻿" + List(head, ex, ex2).mkString("\r\n")), new dom.BlobPropertyBag { `type` = "text/csv" })
-  val a = dom.document.createElement("a").asInstanceOf[dom.HTMLAnchorElement]
-  a.href = dom.URL.createObjectURL(blob)
-  a.setAttribute("download", "skea-import-sample.csv")
-  a.click()
+  Csv.download("skea-import-sample.csv", List(head, ex, ex2))
 }
 </script>
 
@@ -148,9 +134,9 @@ def template(): Unit = {
         </table>
       </div>
       <div class="row acts">
-        <button :disabled="s.busy" @click="run(s, true)">確認する（まだ作らない）</button>
-        <button class="primary" :disabled="s.busy" @click="run(s, false)">取り込む</button>
-        <span v-if="s.busy" class="muted small">処理中…</span>
+        <button :disabled="s.act.busy" @click="run(s, true)">確認する（まだ作らない）</button>
+        <button class="primary" :disabled="s.act.busy" @click="run(s, false)">取り込む</button>
+        <span v-if="s.act.busy" class="muted small">処理中…</span>
       </div>
       <div v-if="s.result.mapC(_.isDefined)" class="panel">
         <b>{{ resultTitle(s) }}</b>

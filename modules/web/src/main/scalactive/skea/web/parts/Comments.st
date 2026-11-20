@@ -17,14 +17,14 @@ case class Props(taskId: UUID, taskKey: String, projectId: UUID, canEdit: Boolea
 case class State(list: RV[List[CommentDto]] = RV(Nil),
                  editor: RV[Option[EditorHandle]] = RV(None),
                  editing: RV[Option[UUID]] = RV(None),
-                 busy: RV[Boolean] = RV(false),
+                 act: ActionState,
                  highlight: RV[String] = RV(""),
                  draft: RV[Option[Option[Json]]] = RV(None),
                  draftNote: RV[String] = RV(""),
                  pending: RV[Option[(Int, Json)]] = RV(None),
                  internal: RV[Boolean] = RV(false))
 
-def initState() = State()
+def initState() = State(act = useAction())
 
 def load(s: State, props: Props, scroll: Boolean = false): Unit =
   Api.comments(props.taskId).foreach { cs =>
@@ -83,20 +83,14 @@ def startWatch(s: State, props: Props): Unit = {
 }
 
 def post(s: State, props: Props): Unit = s.editor.v.foreach { ed =>
-  if (!ed.isEmpty() && !s.busy.v) {
-    s.busy := true
+  if (!ed.isEmpty() && !s.act.busy.v) {
     s.pending.v.foreach(p => dom.window.clearTimeout(p._1))
     s.pending := None
-    Api.addComment(props.taskId, Editor.fromJs(ed.getJSON()), Store.helpdesk.v && s.internal.v).onComplete {
-      case Success(c) =>
-        s.busy := false
-        s.draftNote := ""
-        ed.clear()
-        s.list := s.list.v :+ c
-        Store.changed()
-      case Failure(e) =>
-        s.busy := false
-        Store.error(e)
+    Toasts.report(s.act.run(Api.addComment(props.taskId, Editor.fromJs(ed.getJSON()), Store.helpdesk.v && s.internal.v))) { c =>
+      s.draftNote := ""
+      ed.clear()
+      s.list := s.list.v :+ c
+      Store.changed()
     }
   }
 }
@@ -123,7 +117,7 @@ def newClass(s: State) = s.internal.mapC(i => if (i && Store.helpdesk.v) "new in
           <input type="checkbox" :checked="s.internal.v" @change="s.internal := Dom.checked(event)"> 🔒 内部メモ（エージェントのみ）</label>
         <span class="muted small grow">{{ s.draftNote }}</span>
         <button v-if="s.draftNote.mapC(_.nonEmpty)" class="ghost small" @click="discard(s, props)">下書きを破棄</button>
-        <button class="primary" :disabled="s.busy" @click="post(s, props)">{{ postLabel(s) }}</button>
+        <button class="primary" :disabled="s.act.busy" @click="post(s, props)">{{ postLabel(s) }}</button>
       </div>
     </div>
   </div>

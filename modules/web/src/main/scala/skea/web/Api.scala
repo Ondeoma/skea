@@ -9,65 +9,9 @@ import skea.shared.*
 import java.util.UUID
 import scala.concurrent.Future
 import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
-import scala.scalajs.js
 
-/** API の呼び出しのエラー. */
-final case class ApiError(status: Int, message: String) extends Exception(message)
-
-/** バックエンドの REST API. 401 はログイン画面へ、エラーは {"error": ...} の文言にする. */
-object Api {
-
-  /** fetch の設定（同じオリジンの Cookie を付ける. body は JSON の文字列）. */
-  def init(method: dom.HttpMethod, body: Option[String] = None): dom.RequestInit = {
-    val i = new dom.RequestInit {}
-    i.method = method
-    i.credentials = dom.RequestCredentials.`same-origin`
-    body.foreach { b =>
-      i.headers = js.Dictionary("Content-Type" -> "application/json")
-      i.body = b
-    }
-    i
-  }
-
-  private def request(method: dom.HttpMethod, url: String, body: Option[Json] = None): Future[Option[Json]] =
-    dom.fetch(url, init(method, body.map(_.noSpaces))).toFuture.flatMap { res =>
-      if (res.status == 401) {
-        val back = dom.window.location.pathname + dom.window.location.search
-        if (!dom.window.location.pathname.startsWith("/login"))
-          dom.window.location.href = "/auth/login?returnTo=" + js.URIUtils.encodeURIComponent(back)
-        Future.failed(ApiError(401, "ログインしてください"))
-      } else if (!res.ok) {
-        res.text().toFuture.recover(_ => "").flatMap { t =>
-          val msg = parse(
-            t
-          ).toOption.flatMap(_.hcursor.get[String]("error").toOption).getOrElse(s"${res.status} ${res.statusText}")
-          Future.failed(ApiError(res.status, msg))
-        }
-      } else if (res.status == 204) Future.successful(None)
-      else res.text().toFuture.map(t => if (t.isEmpty) None else Some(parse(t).fold(throw _, identity)))
-    }
-
-  private def as[A: Decoder](j: Option[Json]): A =
-    j.getOrElse(Json.Null).as[A].fold(e => throw ApiError(0, e.getMessage), identity)
-
-  def get[A: Decoder](url: String): Future[A] = request(dom.HttpMethod.GET, url).map(as[A])
-  def post[A: Decoder](url: String, body: Json = Json.obj()): Future[A] =
-    request(dom.HttpMethod.POST, url, Some(body)).map(as[A])
-  def put[A: Decoder](url: String, body: Json): Future[A] = request(dom.HttpMethod.PUT, url, Some(body)).map(as[A])
-  def patch[A: Decoder](url: String, body: Json): Future[A] = request(dom.HttpMethod.PATCH, url, Some(body)).map(as[A])
-  def send(method: dom.HttpMethod, url: String, body: Option[Json] = None): Future[Unit] =
-    request(method, url, body).map(_ => ())
-  def delete(url: String): Future[Unit] = send(dom.HttpMethod.DELETE, url)
-  def postUnit(url: String, body: Json = Json.obj()): Future[Unit] = send(dom.HttpMethod.POST, url, Some(body))
-  def putUnit(url: String, body: Json): Future[Unit] = send(dom.HttpMethod.PUT, url, Some(body))
-  def patchUnit(url: String, body: Json): Future[Unit] = send(dom.HttpMethod.PATCH, url, Some(body))
-
-  def enc(s: String): String = js.URIUtils.encodeURIComponent(s)
-
-  def query(params: (String, Option[String])*): String = {
-    val q = params.collect { case (k, Some(v)) if v.nonEmpty => s"$k=${enc(v)}" }
-    if (q.isEmpty) "" else q.mkString("?", "&", "")
-  }
+/** バックエンドの REST API（共通部分は sbirds-lib の ApiBase）. */
+object Api extends sbirds.web.ApiBase {
 
   // ---------------------------------------------------------------- 認証・自分
 
@@ -128,36 +72,9 @@ object Api {
   def removeWatcher(id: UUID, userId: UUID): Future[Unit] = delete(s"/api/tasks/$id/watchers/$userId")
   def manualRules(id: UUID): Future[List[ManualRuleDto]] = get[List[ManualRuleDto]](s"/api/tasks/$id/automations")
 
-  /** ファイルを multipart/form-data（file）で送る. */
-  def sendFile[A: Decoder](url: String, file: dom.File): Future[A] = {
-    val fd = new dom.FormData()
-    fd.append("file", file, file.name)
-    val i = init(dom.HttpMethod.POST)
-    i.body = fd
-    dom.fetch(url, i).toFuture.flatMap { res =>
-      res.text().toFuture.map { t =>
-        val j = parse(t).getOrElse(Json.Null)
-        if (res.ok) j.as[A].fold(e => throw ApiError(0, e.getMessage), identity)
-        else throw ApiError(res.status, j.hcursor.get[String]("error").getOrElse(res.statusText))
-      }
-    }
-  }
-
-  /**
-   * 外部サービスのリンクの名前（LinkTitles が裏で問い合わせる）. 失敗してもログイン画面には移らない（次に描き直されたときにもう一度試す）.
-   */
-  def linkTitles(provider: String, ids: List[String]): Future[LinkTitlesDto] =
-    dom.fetch(
-      s"/api/integrations/$provider/titles",
-      init(dom.HttpMethod.POST, Some(Json.obj("ids" -> ids.asJson).noSpaces))
-    ).toFuture.flatMap { res =>
-      if (!res.ok) Future.failed(ApiError(res.status, res.statusText))
-      else res.text().toFuture.map(t => parse(t).flatMap(_.as[LinkTitlesDto]).fold(throw _, identity))
-    }
-
   /** 添付ファイルのアップロード. */
   def upload(taskId: UUID, file: dom.File): Future[AttachmentDto] =
-    sendFile[AttachmentDto](s"/api/tasks/$taskId/attachments", file)
+    postFile[AttachmentDto](s"/api/tasks/$taskId/attachments", file, file.name)
 
   // ---------------------------------------------------------------- ヘルプデスク（窓口）
 
@@ -168,7 +85,7 @@ object Api {
   def helpReply(key: String, body: Json): Future[CommentDto] =
     post[CommentDto](s"/api/help/tasks/${enc(key)}/comments", CommentReq(body).asJson)
   def helpUpload(taskId: UUID, file: dom.File): Future[AttachmentDto] =
-    sendFile[AttachmentDto](s"/api/help/tasks/$taskId/attachments", file)
+    postFile[AttachmentDto](s"/api/help/tasks/$taskId/attachments", file, file.name)
 
   /** 窓口の案内（ログインしていなくても見られる. 見られなければ None）. */
   def portal(key: String): Future[Option[HelpPortalDto]] =

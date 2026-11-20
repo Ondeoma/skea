@@ -18,8 +18,7 @@ object Main {
     Store.startSync()
     Theme.apply()
     TouchDnd.install()
-    // 表示（.rich）のコードのハイライト、skorimako のブラウザの観測（設定があるときだけ）と、PWA（ホーム画面に追加・オフラインで開く・プッシュ通知）
-    Highlight.start()
+    // skorimako のブラウザの観測（設定があるときだけ）と、PWA（ホーム画面に追加・オフラインで開く・プッシュ通知）
     Observe.start()
     Pwa.register()
     App()(dom.document.body, AddMethod.appendS(IdSelector("app"))).init()

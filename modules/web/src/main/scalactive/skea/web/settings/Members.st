@@ -28,22 +28,22 @@ def mounted(s: State): Unit = load(s)
 def search(s: State): Unit = if (s.q.v.trim.nonEmpty) Api.users(s.q.v.trim).foreach(s.candidates := _)
 
 def add(s: State, u: UserBrief): Unit =
-  Store.report(Api.putUnit(s"/api/projects/${Store.pid}/members", SetMemberReq(u.id, s.role.v).asJson)) { _ =>
+  Toasts.report(Api.putUnit(s"/api/projects/${Store.pid}/members", SetMemberReq(u.id, s.role.v).asJson)) { _ =>
     s.candidates := Nil; s.q := ""; load(s); Store.reloadMeta()
   }
 
 def setRole(s: State, m: MemberDto, role: String): Unit =
-  Store.report(Api.putUnit(s"/api/projects/${Store.pid}/members", SetMemberReq(m.user.id, role).asJson)) { _ => load(s); Store.reloadMeta() }
+  Toasts.report(Api.putUnit(s"/api/projects/${Store.pid}/members", SetMemberReq(m.user.id, role).asJson)) { _ => load(s); Store.reloadMeta() }
 
 def remove(s: State, m: MemberDto): Unit =
   Dialog.confirm(s"${m.user.name} さんをメンバーから外しますか？") {
-    Store.report(Api.delete(s"/api/projects/${Store.pid}/members/${m.user.id}")) { _ => load(s); Store.reloadMeta() }
+    Toasts.report(Api.delete(s"/api/projects/${Store.pid}/members/${m.user.id}")) { _ => load(s); Store.reloadMeta() }
   }
 
 def addGroup(s: State): Unit = if (s.group.v.trim.nonEmpty)
-  Store.report(Api.putUnit(s"/api/projects/${Store.pid}/groups", SetGroupRoleReq(s.group.v.trim, s.groupRole.v).asJson)) { _ => s.group := ""; load(s) }
+  Toasts.report(Api.putUnit(s"/api/projects/${Store.pid}/groups", SetGroupRoleReq(s.group.v.trim, s.groupRole.v).asJson)) { _ => s.group := ""; load(s) }
 
-def removeGroup(s: State, g: GroupRoleDto): Unit = Store.report(Api.delete(s"/api/projects/${Store.pid}/groups/${g.groupId}"))(_ => load(s))
+def removeGroup(s: State, g: GroupRoleDto): Unit = Toasts.report(Api.delete(s"/api/projects/${Store.pid}/groups/${g.groupId}"))(_ => load(s))
 
 /** ヘルプデスクのプロジェクトでは、問い合わせする"ユーザ"も選べる. */
 def roleOpts: List[Opt] =
@@ -61,13 +61,13 @@ def roleOpts: List[Opt] =
       <button type="submit">検索</button>
     </form>
     <div v-if="s.candidates.mapC(_.nonEmpty)" class="cands">
-      <button v-for="u in s.candidates" :key="u.id" class="small" @click="add(s, u)"><Avatar :user="Some(u)" :size="18" /> {{ u.name }} を追加</button>
+      <button v-for="u in s.candidates" :key="u.id" class="small" @click="add(s, u)"><Avatar :user="Some(person(u))" :size="18" /> {{ u.name }} を追加</button>
     </div>
     <div class="table-wrap">
       <table class="list">
         <tbody>
           <tr v-for="m in s.members" :key="m.user.id">
-            <td><Avatar :user="Some(m.user)" :size="24" /> {{ m.user.name }}</td>
+            <td><Avatar :user="Some(person(m.user))" :size="24" /> {{ m.user.name }}</td>
             <td>
               <Combo :options="roleOpts" :value="m.role" :small="true" :disabled="!Store.isProjectAdmin.v" :onChange="v => setRole(s, m, v)" />
             </td>

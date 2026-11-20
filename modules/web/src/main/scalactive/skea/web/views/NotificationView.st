@@ -28,7 +28,7 @@ def open(n: NotificationDto): Unit = {
 }
 
 def readAll(s: State): Unit =
-  Store.report(Api.postUnit("/api/notifications/read-all" + Option(s.kind.v).filter(_.nonEmpty).fold("")(k => s"?kinds=$k"))) { _ =>
+  Toasts.report(Api.postUnit("/api/notifications/read-all" + Option(s.kind.v).filter(_.nonEmpty).fold("")(k => s"?kinds=$k"))) { _ =>
     load(s); Store.poll()
   }
 
@@ -64,7 +64,7 @@ def mentions = Store.unread.mapC(u => if (u.mentions > 0) s"メンション（${
         <div class="grow">
           <div>{{ n.title }}</div>
           <div class="muted small body">{{ n.body }}</div>
-          <div class="muted small"><Avatar :user="n.actor" :size="16" /> {{ n.actor.map(_.name).getOrElse("skea") }} · {{ Fmt.ago(n.at) }}</div>
+          <div class="muted small"><Avatar :user="n.actor.map(person)" :size="16" /> {{ n.actor.map(_.name).getOrElse("skea") }} · {{ Fmt.ago(n.at) }}</div>
         </div>
       </div>
       <p v-if="s.list.mapC(_.isEmpty)" class="empty">通知はありません</p>

@@ -18,7 +18,7 @@ def status(props: Props): String = Fmt.statusName(Store.meta.v, props.task.statu
     <span v-for="l in labels(props)" class="label-chip hide-sp" :style='"background:" + l.color'>{{ l.name }}</span>
     <span class="ic" :title='"優先度: " + Priority.label(props.task.priority)'>{{ Priority.icon(props.task.priority) }}</span>
     <span :class="badge(props)">{{ status(props) }}</span>
-    <Avatar :user="props.task.assignee" :size="22" />
+    <Avatar :user="props.task.assignee.map(person)" :size="22" />
   </div>
 </template>
 

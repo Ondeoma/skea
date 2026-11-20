@@ -38,14 +38,14 @@ def save(s: State): Unit = {
     case Some(x) => Api.putUnit(s"/api/repos/${x.id}", r.asJson)
     case None    => Api.post[RepoDto](s"/api/projects/${Store.pid}/repos", r.asJson).map(_ => ())
   }
-  Store.report(f) { _ => s.editing := None; load(s) }
+  Toasts.report(f) { _ => s.editing := None; load(s) }
 }
 
 def remove(s: State, r: RepoDto): Unit =
-  Dialog.confirm(s"「${r.name}」の連携をやめますか？（リンク済みのコミットも消えます）") { Store.report(Api.delete(s"/api/repos/${r.id}"))(_ => load(s)) }
+  Dialog.confirm(s"「${r.name}」の連携をやめますか？（リンク済みのコミットも消えます）") { Toasts.report(Api.delete(s"/api/repos/${r.id}"))(_ => load(s)) }
 
-def poll(s: State, r: RepoDto): Unit = Store.report(Api.post[Json](s"/api/repos/${r.id}/poll")) { j =>
-  Store.toast(s"${j.hcursor.get[Int]("linked").getOrElse(0)} 件のコミットをリンクしました"); load(s); Store.changed()
+def poll(s: State, r: RepoDto): Unit = Toasts.report(Api.post[Json](s"/api/repos/${r.id}/poll")) { j =>
+  Toasts.show(s"${j.hcursor.get[Int]("linked").getOrElse(0)} 件のコミットをリンクしました"); load(s); Store.changed()
 }
 
 /** サービスの既定の URL（一括監視のとき）. */

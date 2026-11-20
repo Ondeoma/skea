@@ -95,7 +95,7 @@ def startSave(s: State): Unit = { s.saveName := ""; s.saveShared := false; s.sav
 def save(s: State): Unit = Store.meta.v.foreach { m =>
   val name = s.saveName.v.trim
   if (name.nonEmpty)
-    Store.report(Api.post[BoardFilterDto](s"/api/projects/${m.project.id}/board-filters", BoardFilterReq(name, cond(s).v, s.saveShared.v).asJson)) { _ =>
+    Toasts.report(Api.post[BoardFilterDto](s"/api/projects/${m.project.id}/board-filters", BoardFilterReq(name, cond(s).v, s.saveShared.v).asJson)) { _ =>
       s.saving := false
       loadSaved(s)
     }
@@ -103,7 +103,7 @@ def save(s: State): Unit = Store.meta.v.foreach { m =>
 
 def removeSaved(s: State, f: BoardFilterDto): Unit =
   Dialog.confirm(s"保存した条件「${f.name}」を削除しますか？" + (if (f.shared) "（プロジェクトの全員から消えます）" else ""), "削除する") {
-    Store.report(Api.delete(s"/api/board-filters/${f.id}"))(_ => loadSaved(s))
+    Toasts.report(Api.delete(s"/api/board-filters/${f.id}"))(_ => loadSaved(s))
   }
 
 def clear(s: State): Unit = applyCond(s, BoardCond())
@@ -189,7 +189,7 @@ def drop(s: State, st: StatusDto, ln: Lane, e: dom.Event): Unit = {
         case Some(a) => Api.updateTask(id, io.circe.Json.obj("assigneeId" -> a.map(_.id).asJson)).map(_ => Store.changed())
         case None    => scala.concurrent.Future.successful(())
       }
-    }.failed.foreach { err => Store.error(err); load(s) }
+    }.failed.foreach { err => Toasts.error(err); load(s) }
   }
 }
 
@@ -204,9 +204,9 @@ def whoClass(s: State, w: String) = s.who.mapC(x => if (x == w) "chip active" el
 def complete(s: State): Unit = sprint(s).v.foreach { sp =>
   Store.meta.v.foreach { m =>
     val to = Option(s.moveTo.v).filter(_.nonEmpty).map(UUID.fromString)
-    Store.report(Api.post[io.circe.Json](s"/api/projects/${m.project.id}/sprints/${sp.id}/complete", CompleteSprintReq(to).asJson)) { r =>
+    Toasts.report(Api.post[io.circe.Json](s"/api/projects/${m.project.id}/sprints/${sp.id}/complete", CompleteSprintReq(to).asJson)) { r =>
       s.completing := false
-      Store.toast(s"スプリント「${sp.name}」を完了しました（未完了 ${r.hcursor.get[Int]("moved").getOrElse(0)} 件を移動）")
+      Toasts.show(s"スプリント「${sp.name}」を完了しました（未完了 ${r.hcursor.get[Int]("moved").getOrElse(0)} 件を移動）")
       Store.reloadMeta()
       Store.changed()
       load(s)
@@ -241,13 +241,13 @@ def backlogLink: String = Store.meta.v.map(m => "/p/" + m.project.key + "/backlo
         <button :class='whoClass(s, "")' @click='s.who := ""'>全員</button>
         <button :class='whoClass(s, "me")' @click='s.who := (if (s.who.v == "me") "" else "me")' title="自分が担当のタスクだけ">👤 自分</button>
         <button v-for="u in members" :key="u.id" :class='s.who.mapC(w => if (w == u.id.toString) "av active" else "av")' @click="s.who := (if (s.who.v == u.id.toString) &quot;&quot; else u.id.toString)">
-          <Avatar :user="Some(u)" :size="26" />
+          <Avatar :user="Some(person(u))" :size="26" />
         </button>
         <button :class='whoClass(s, "none")' @click='s.who := "none"'>未割り当て</button>
       </div>
       <Combo :bind="Some(s.label)" :live="Some(labels.mapC(_.map(l => Opt(l.id.toString, l.name, color = l.color))))" clearLabel="すべてのラベル" :small="true" />
-      <Combo :bind="Some(s.priority)" :options="Opt.priorities" clearLabel="すべての優先度" :small="true" />
-      <Combo :bind="Some(s.taskType)" :options="Opt.types" clearLabel="すべての種類" :small="true" />
+      <Combo :bind="Some(s.priority)" :options="Opts.priorities" clearLabel="すべての優先度" :small="true" />
+      <Combo :bind="Some(s.taskType)" :options="Opts.types" clearLabel="すべての種類" :small="true" />
       <Combo :bind="Some(s.due)" :options="dueOpts" clearLabel="期日を問わない" :small="true" />
       <Combo :options="laneOpts" :value="s.laneBy.v" :small="true" :onChange="v => setLanes(s, v)" />
       <button v-if="hasCond(s)" class="ghost small" @click="clear(s)">条件を解除</button>
@@ -264,7 +264,7 @@ def backlogLink: String = Store.meta.v.map(m => "/p/" + m.project.key + "/backlo
       <div v-for="ln in lanes(s)" :key="ln.key" class="lane">
         <div v-if="laneMode(s)" class="lane-head" @click="fold(s, ln)">
           <span class="muted">{{ foldIcon(s, ln) }}</span>
-          <Avatar v-if='ln.key.startsWith("u:")' :user="ln.user" :size="20" />
+          <Avatar v-if='ln.key.startsWith("u:")' :user="ln.user.map(person)" :size="20" />
           <span v-if="ln.color.isDefined" class="label-chip" :style='"background:" + ln.color.getOrElse("")'>{{ ln.title }}</span>
           <b v-else>{{ ln.title }}</b>
           <span class="muted small">{{ laneCount(s, ln) }}</span>
@@ -288,7 +288,7 @@ def backlogLink: String = Store.meta.v.map(m => "/p/" + m.project.key + "/backlo
     <Modal v-if="s.saving" :onClose="_ => s.saving := false">
       <form @submit.prevent="save(s)">
         <h2>絞り込み条件を保存</h2>
-        <label class="field"><span>名前</span><input type="text" v-model="s.saveName" maxlength="50" placeholder="自分の今週のバグ" autofocus></label>
+        <label class="field"><span>名前</span><input type="text" v-model="s.saveName" maxlength="50" placeholder="自分の今週のバグ" v-focus></label>
         <label v-if="Store.canEdit" class="small"><input type="checkbox" v-model="s.saveShared"> プロジェクトで共有する（外すと自分だけに表示）</label>
         <p class="muted small">ボードの上にボタンとして並び、押すと同じ条件で絞り込めます。</p>
         <div class="actions">

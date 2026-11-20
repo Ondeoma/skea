@@ -14,28 +14,26 @@ case class Props(logs: List[WorklogDto], title: String, addTo: Option[(UUID, Str
 /** 編集中の行（作業日・時間・内容）. */
 case class Row(w: WorklogDto, date: RV[String], time: RV[String], note: RV[String])
 
-case class State(rows: List[Row], newTime: RV[String] = RV(""), newNote: RV[String] = RV(""), busy: RV[Boolean] = RV(false))
+case class State(rows: List[Row], act: ActionState, newTime: RV[String] = RV(""), newNote: RV[String] = RV(""))
 
-def initState(props: Props) = State(props.logs.sortBy(_.workDate).map(w => Row(w, RV(w.workDate), RV(Minutes.format(w.minutes)), RV(w.note))))
+def initState(props: Props) = State(props.logs.sortBy(_.workDate).map(w => Row(w, RV(w.workDate), RV(Minutes.format(w.minutes)), RV(w.note))), useAction())
 
 def editable(w: WorklogDto): Boolean = Store.myId.contains(w.user.id) || Store.isAdmin.v
 
-def done(props: Props, msg: String): Unit = { Store.toast(msg); Store.changed(); props.onSaved(()); props.onClose(()) }
+def done(props: Props, msg: String): Unit = { Toasts.show(msg); Store.changed(); props.onSaved(()); props.onClose(()) }
 
 /** 変えた行だけを保存する. */
 def save(s: State, props: Props): Unit = {
   val changed = s.rows.filter(r => editable(r.w) && (r.date.v != r.w.workDate || Minutes.parse(r.time.v).exists(_ != r.w.minutes) || r.note.v != r.w.note))
   val bad = changed.find(r => Minutes.parse(r.time.v).forall(m => m <= 0 || m > 24 * 60))
   val add = Minutes.parse(s.newTime.v).filter(_ => props.addTo.isDefined)
-  if (bad.isDefined || (s.newTime.v.trim.nonEmpty && add.isEmpty)) Store.toast("時間は 1h30m、90m、1.5h のように入力してください（24時間まで）", error = true)
+  if (bad.isDefined || (s.newTime.v.trim.nonEmpty && add.isEmpty)) Toasts.show("時間は 1h30m、90m、1.5h のように入力してください（24時間まで）", error = true)
   else if (changed.isEmpty && add.isEmpty) props.onClose(())
   else {
-    s.busy := true
     val updates = changed.map(r => Api.putUnit(s"/api/worklogs/${r.w.id}", WorklogReq(r.date.v, Minutes.parse(r.time.v).get, Some(r.note.v.trim)).asJson))
     val created = add.toList.flatMap(m => props.addTo.map((tid, d) => Api.addWorklog(tid, WorklogReq(d, m, Some(s.newNote.v.trim))).map(_ => ())))
-    Future.sequence(updates ++ created).onComplete { r =>
-      s.busy := false
-      r.failed.foreach(Store.error)
+    s.act.run(Future.sequence(updates ++ created)).onComplete { r =>
+      r.failed.foreach(Toasts.error)
       if (r.isSuccess) done(props, "作業時間を保存しました")
     }
   }
@@ -43,7 +41,7 @@ def save(s: State, props: Props): Unit = {
 
 def remove(s: State, props: Props, r: Row): Unit =
   Dialog.confirm(s"${Fmt.day(r.w.workDate)} の作業時間（${Minutes.format(r.w.minutes)}）を削除しますか？", "削除する") {
-    Store.report(Api.delete(s"/api/worklogs/${r.w.id}"))(_ => done(props, "作業時間を削除しました"))
+    Toasts.report(Api.delete(s"/api/worklogs/${r.w.id}"))(_ => done(props, "作業時間を削除しました"))
   }
 
 def total(s: State) = Minutes.format(s.rows.map(_.w.minutes).sum)
@@ -55,7 +53,7 @@ def total(s: State) = Minutes.format(s.rows.map(_.w.minutes).sum)
       <h2>作業時間の編集</h2>
       <p class="muted small">{{ props.title }}</p>
       <div v-for="r in s.rows" :key="r.w.id" class="wl">
-        <div class="who small"><Avatar :user="Some(r.w.user)" :size="18" /> {{ r.w.user.name }}
+        <div class="who small"><Avatar :user="Some(person(r.w.user))" :size="18" /> {{ r.w.user.name }}
           <RouterLink :to='"/tasks/" + r.w.taskKey' class="key">{{ r.w.taskKey }}</RouterLink> <span class="muted ell">{{ r.w.taskTitle }}</span></div>
         <div class="row fields">
           <input type="date" v-model="r.date" :disabled="!editable(r.w)">
@@ -75,7 +73,7 @@ def total(s: State) = Minutes.format(s.rows.map(_.w.minutes).sum)
       <div class="actions">
         <span class="muted small grow">合計 {{ total(s) }}</span>
         <button type="button" @click="props.onClose(())">キャンセル</button>
-        <button type="submit" class="primary" :disabled="s.busy">保存</button>
+        <button type="submit" class="primary" :disabled="s.act.busy">保存</button>
       </div>
     </form>
   </Modal>

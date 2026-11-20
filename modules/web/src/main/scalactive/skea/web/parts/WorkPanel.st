@@ -30,7 +30,7 @@ def add(s: State, props: Props): Unit = Minutes.parse(s.time.v) match {
   case None => s.error := "時間は 1h30m、90m、1.5h のように入力してください"
   case Some(m) =>
     s.error := ""
-    Store.report(Api.addWorklog(props.taskId, WorklogReq(s.date.v, m, Some(s.note.v)))) { _ =>
+    Toasts.report(Api.addWorklog(props.taskId, WorklogReq(s.date.v, m, Some(s.note.v)))) { _ =>
       s.time := ""; s.note := ""
       load(s, props)
       props.onChanged(())
@@ -40,7 +40,7 @@ def add(s: State, props: Props): Unit = Minutes.parse(s.time.v) match {
 
 def remove(s: State, props: Props, w: WorklogDto): Unit =
   Dialog.confirm("この作業時間を削除しますか？") {
-    Store.report(Api.delete(s"/api/worklogs/${w.id}")) { _ => load(s, props); props.onChanged(()) }
+    Toasts.report(Api.delete(s"/api/worklogs/${w.id}")) { _ => load(s, props); props.onChanged(()) }
   }
 
 def total(s: State) = s.logs.mapC(ls => Minutes.format(ls.map(_.minutes).sum))
@@ -59,7 +59,7 @@ def isHistory(props: Props): Boolean = props.tab == "history"
 <template>
   <div v-if="isHistory(props)">
     <div v-for="e in s.history" :key="e.id" class="ev">
-      <Avatar :user="e.actor" :size="22" />
+      <Avatar :user="e.actor.map(person)" :size="22" />
       <div>
         <b>{{ Store.actorName(e) }}</b> さんが {{ EventText.describe(e.kind, e.detail, None) }}
         <div v-for="c in changes(e)" class="muted small">{{ c }}</div>
@@ -79,7 +79,7 @@ def isHistory(props: Props): Boolean = props.tab == "history"
       <tbody>
         <tr v-for="w in s.logs" :key="w.id">
           <td class="nowrap">{{ Fmt.day(w.workDate) }}</td>
-          <td class="nowrap"><Avatar :user="Some(w.user)" :size="20" /> {{ w.user.name }}</td>
+          <td class="nowrap"><Avatar :user="Some(person(w.user))" :size="20" /> {{ w.user.name }}</td>
           <td class="nowrap"><b>{{ Minutes.format(w.minutes) }}</b></td>
           <td class="muted">{{ w.note }}</td>
           <td><button v-if="mine(w) && props.canEdit" class="ghost small" @click="remove(s, props, w)">削除</button></td>

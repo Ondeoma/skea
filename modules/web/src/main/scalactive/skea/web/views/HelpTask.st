@@ -15,11 +15,11 @@ case class Props(taskKey: String)
 case class State(detail: RV[Option[HelpTaskDetailDto]] = RV(None),
                  error: RV[String] = RV(""),
                  editor: RV[Option[EditorHandle]] = RV(None),
-                 busy: RV[Boolean] = RV(false),
-                 uploading: RV[Boolean] = RV(false),
+                 act: ActionState,
+                 upload: ActionState,
                  shares: RV[Option[HelpSharesDto]] = RV(None))
 
-def initState() = State()
+def initState() = State(act = useAction(), upload = useAction())
 
 def load(s: State, props: Props): Unit =
   Api.helpTask(props.taskKey).onComplete {
@@ -36,9 +36,9 @@ def loadShares(s: State, props: Props): Unit =
 
 /** 自分の共有をこの一覧にする（エージェントが共有したものは残る）. */
 def saveShares(s: State, props: Props, ids: List[java.util.UUID], msg: String): Unit =
-  Store.report(Api.put[HelpSharesDto](s"/api/help/tasks/${Api.enc(props.taskKey)}/shares", HelpSharesReq(ids).asJson)) { x =>
+  Toasts.report(Api.put[HelpSharesDto](s"/api/help/tasks/${Api.enc(props.taskKey)}/shares", HelpSharesReq(ids).asJson)) { x =>
     s.shares := Some(x)
-    Store.toast(msg)
+    Toasts.show(msg)
     load(s, props)
   }
 
@@ -61,33 +61,23 @@ def mounted(s: State, props: Props): Unit = {
 }
 
 def reply(s: State, props: Props): Unit = s.editor.v.foreach { ed =>
-  if (!ed.isEmpty() && !s.busy.v) {
-    s.busy := true
-    Api.helpReply(props.taskKey, Editor.fromJs(ed.getJSON())).onComplete {
-      case Success(c) =>
-        s.busy := false
-        ed.clear()
-        s.detail := s.detail.v.map(d => d.copy(comments = d.comments :+ c))
-      case Failure(e) =>
-        s.busy := false
-        Store.error(e)
+  if (!ed.isEmpty() && !s.act.busy.v)
+    Toasts.report(s.act.run(Api.helpReply(props.taskKey, Editor.fromJs(ed.getJSON())))) { c =>
+      ed.clear()
+      s.detail := s.detail.v.map(d => d.copy(comments = d.comments :+ c))
     }
-  }
 }
 
 def upload(s: State, props: Props, e: dom.Event): Unit = s.detail.v.foreach { d =>
-  val fs = e.target.asInstanceOf[dom.HTMLInputElement].files
-  s.uploading := true
-  scala.concurrent.Future.sequence((0 until fs.length).map(i => Api.helpUpload(d.task.id, fs(i)))).onComplete { r =>
-    s.uploading := false
-    r.failed.foreach(Store.error)
+  s.upload.run(scala.concurrent.Future.sequence(Dom.takeFiles(e).map(Api.helpUpload(d.task.id, _)))).onComplete { r =>
+    r.failed.foreach(Toasts.error)
     load(s, props)
   }
 }
 
 def watchToggle(s: State, props: Props): Unit = s.detail.v.foreach { d =>
   val url = s"/api/help/tasks/${d.task.key}/watch"
-  Store.report(if (d.watching) Api.delete(url) else Api.postUnit(url))(_ => load(s, props))
+  Toasts.report(if (d.watching) Api.delete(url) else Api.postUnit(url))(_ => load(s, props))
 }
 
 def mine(c: CommentDto): Boolean = c.author.exists(a => Store.myId.contains(a.id))
@@ -112,7 +102,7 @@ def bubble(c: CommentDto): String = if (mine(c)) "msg mine" else "msg"
       <dl v-if="d.fields.nonEmpty" class="card fields">
         <template v-for="f in d.fields"><dt class="muted small">{{ f.name }}</dt><dd>{{ HelpFields.show(f.value) }}</dd></template>
       </dl>
-      <div v-if="d.descriptionHtml.nonEmpty" class="card rich desc" v-html="d.descriptionHtml"></div>
+      <div v-if="d.descriptionHtml.nonEmpty" class="card rich desc" v-html="d.descriptionHtml" v-rich="d.descriptionHtml"></div>
 
       <section v-if="d.attachments.nonEmpty" class="atts">
         <a v-for="a in d.attachments" :key="a.id" :href="a.url" target="_blank" rel="noopener" class="att">
@@ -135,9 +125,9 @@ def bubble(c: CommentDto): String = if (mine(c)) "msg mine" else "msg"
       <h2>やりとり</h2>
       <div class="thread">
         <div v-for="c in d.comments" :key="c.id" :id='"comment-" + c.id' :class="bubble(c)">
-          <div class="who"><Avatar :user="c.author" :size="22" /> <b>{{ c.author.map(_.name).getOrElse("") }}</b>
+          <div class="who"><Avatar :user="c.author.map(person)" :size="22" /> <b>{{ c.author.map(_.name).getOrElse("") }}</b>
             <span class="muted small">{{ Fmt.dateTime(c.createdAt) }}</span></div>
-          <div class="rich" v-html="c.html"></div>
+          <div class="rich" v-html="c.html" v-rich="c.html"></div>
         </div>
         <p v-if="d.comments.isEmpty" class="muted">まだ返信はありません。担当者から返信があると通知でお知らせします。</p>
       </div>
@@ -147,10 +137,10 @@ def bubble(c: CommentDto): String = if (mine(c)) "msg mine" else "msg"
           :onReady="h => s.editor := Some(h)" :onSubmit="_ => reply(s, props)" />
         <div class="row actions">
           <label class="btn small">📎 ファイルを添付<input type="file" multiple class="hidden" @change="upload(s, props, event)"></label>
-          <span v-if="s.uploading" class="muted small">アップロード中…</span>
+          <span v-if="s.upload.busy" class="muted small">アップロード中…</span>
           <span class="grow"></span>
           <button class="small" @click="watchToggle(s, props)">{{ if (d.watching) "🔔 通知を受け取っています" else "🔕 通知を受け取る" }}</button>
-          <button class="primary" :disabled="s.busy" @click="reply(s, props)">返信する</button>
+          <button class="primary" :disabled="s.act.busy" @click="reply(s, props)">返信する</button>
         </div>
       </div>
     </template>

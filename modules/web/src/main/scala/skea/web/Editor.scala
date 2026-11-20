@@ -399,7 +399,7 @@ object Editor {
       case None => null
       case Some(url) =>
         val f: js.Function1[dom.File, js.Promise[js.Object]] = (file: dom.File) =>
-          Api.sendFile[AttachmentDto](url, file).map(a =>
+          Api.postFile[AttachmentDto](url, file, file.name).map(a =>
             js.Dynamic.literal(
               url = a.url,
               name = a.fileName,

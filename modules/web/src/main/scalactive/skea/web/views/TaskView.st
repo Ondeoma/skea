@@ -35,9 +35,9 @@ case class State(detail: RV[Option[TaskDetailDto]] = RV(None),
                  ident: RV[Option[Ident]] = RV(None),
                  descContent: RV[Option[Json]] = RV(None),
                  rules: RV[List[ManualRuleDto]] = RV(Nil),
-                 uploading: RV[Boolean] = RV(false))
+                 upload: ActionState)
 
-def initState() = State()
+def initState() = State(upload = useAction())
 
 def load(s: State, props: Props): Unit =
   Api.task(props.taskKey).onComplete {
@@ -66,7 +66,7 @@ def t(s: State): Option[TaskDto] = s.detail.v.map(_.task)
 def patch(s: State, props: Props, kv: (String, Json)*): Unit = s.detail.v.foreach { d =>
   Api.updateTask(d.task.id, Json.obj((kv :+ ("version" -> d.task.version.asJson))*)).onComplete {
     case Success(_) => load(s, props); Store.changed()
-    case Failure(e) => Store.error(e); load(s, props)
+    case Failure(e) => Toasts.error(e); load(s, props)
   }
 }
 
@@ -94,7 +94,7 @@ def toggleLabel(s: State, props: Props, l: LabelDto, on: Boolean): Unit = t(s).f
 
 def addLabel(s: State, props: Props): Unit = (Store.meta.v, t(s)) match {
   case (Some(m), Some(x)) if s.newLabel.v.trim.nonEmpty =>
-    Store.report(Api.post[LabelDto](s"/api/projects/${m.project.id}/labels", LabelReq(s.newLabel.v.trim, None).asJson)) { l =>
+    Toasts.report(Api.post[LabelDto](s"/api/projects/${m.project.id}/labels", LabelReq(s.newLabel.v.trim, None).asJson)) { l =>
       s.newLabel := ""
       Store.reloadMeta()
       patch(s, props, "labelIds" -> (x.labelIds :+ l.id).distinct.map(_.toString).asJson)
@@ -105,15 +105,15 @@ def addLabel(s: State, props: Props): Unit = (Store.meta.v, t(s)) match {
 def setField(s: State, props: Props, f: CustomFieldDto, v: Json): Unit = patch(s, props, "fields" -> Json.obj(f.id.toString -> v))
 def watchToggle(s: State, props: Props): Unit = s.detail.v.foreach { d =>
   val f = if (d.watching) Api.delete(s"/api/tasks/${d.task.id}/watch") else Api.postUnit(s"/api/tasks/${d.task.id}/watch")
-  Store.report(f)(_ => load(s, props))
+  Toasts.report(f)(_ => load(s, props))
 }
 
 def addWatcher(s: State, props: Props, uid: String): Unit = s.detail.v.foreach { d =>
-  if (uid.nonEmpty) Store.report(Api.addWatcher(d.task.id, UUID.fromString(uid)))(_ => load(s, props))
+  if (uid.nonEmpty) Toasts.report(Api.addWatcher(d.task.id, UUID.fromString(uid)))(_ => load(s, props))
 }
 
 def removeWatcher(s: State, props: Props, u: UserBrief): Unit = s.detail.v.foreach { d =>
-  Store.report(Api.removeWatcher(d.task.id, u.id))(_ => load(s, props))
+  Toasts.report(Api.removeWatcher(d.task.id, u.id))(_ => load(s, props))
 }
 
 /** ウォッチャーに追加できる人（プロジェクトのメンバーのうち、まだウォッチしていない人）. */
@@ -127,54 +127,50 @@ def addLink(s: State, props: Props): Unit = t(s).foreach { x =>
   val body =
     if (s.linkKind.v == LinkKind.Web) CreateLinkReq(LinkKind.Web, None, Some(target), Some(s.linkTitle.v.trim).filter(_.nonEmpty))
     else CreateLinkReq(s.linkKind.v, Some(target), None, None)
-  Store.report(Api.postUnit(s"/api/tasks/${x.id}/links", body.asJson)) { _ =>
+  Toasts.report(Api.postUnit(s"/api/tasks/${x.id}/links", body.asJson)) { _ =>
     s.linkTarget := ""; s.linkTitle := ""; s.addingLink := false
     load(s, props)
   }
 }
 
 def removeLink(s: State, props: Props, l: TaskLinkDto): Unit = t(s).foreach { x =>
-  Store.report(Api.delete(s"/api/tasks/${x.id}/links/${l.id}"))(_ => load(s, props))
+  Toasts.report(Api.delete(s"/api/tasks/${x.id}/links/${l.id}"))(_ => load(s, props))
 }
 
 def addDep(s: State, props: Props): Unit = t(s).foreach { x =>
-  Store.report(Api.postUnit(s"/api/tasks/${x.id}/dependencies", CreateDependencyReq(s.depKey.v.trim.toUpperCase, None).asJson)) { _ =>
+  Toasts.report(Api.postUnit(s"/api/tasks/${x.id}/dependencies", CreateDependencyReq(s.depKey.v.trim.toUpperCase, None).asJson)) { _ =>
     s.depKey := ""
     load(s, props)
   }
 }
 
 def removeDep(s: State, props: Props, r: TaskRef): Unit = t(s).foreach { x =>
-  Store.report(Api.delete(s"/api/tasks/${x.id}/dependencies/${r.id}"))(_ => load(s, props))
+  Toasts.report(Api.delete(s"/api/tasks/${x.id}/dependencies/${r.id}"))(_ => load(s, props))
 }
 
 def upload(s: State, props: Props, e: dom.Event): Unit = t(s).foreach { x =>
-  val input = e.target.asInstanceOf[dom.HTMLInputElement]
-  val files = (0 until input.files.length).map(input.files(_)).toList
-  s.uploading := true
-  files.foldLeft(scala.concurrent.Future.successful(())) { (acc, f) => acc.flatMap(_ => Api.upload(x.id, f).map(_ => ())) }.onComplete { r =>
-    s.uploading := false
-    input.value = ""
-    r.failed.foreach(Store.error)
+  val files = Dom.takeFiles(e)
+  s.upload.run(files.foldLeft(scala.concurrent.Future.successful(())) { (acc, f) => acc.flatMap(_ => Api.upload(x.id, f).map(_ => ())) }).onComplete { r =>
+    r.failed.foreach(Toasts.error)
     load(s, props)
     Store.changed()
   }
 }
 
 def removeAttachment(s: State, props: Props, a: AttachmentDto): Unit =
-  Dialog.confirm(s"「${a.fileName}」を削除しますか？", "削除する") { Store.report(Api.delete(s"/api/attachments/${a.id}"))(_ => load(s, props)) }
+  Dialog.confirm(s"「${a.fileName}」を削除しますか？", "削除する") { Toasts.report(Api.delete(s"/api/attachments/${a.id}"))(_ => load(s, props)) }
 
 def runRule(s: State, r: ManualRuleDto): Unit = t(s).foreach { x =>
-  Store.report(Api.postUnit(s"/api/tasks/${x.id}/automations/${r.id}/run")) { _ =>
-    Store.toast(s"「${r.name}」を実行しました（数秒で反映されます）")
+  Toasts.report(Api.postUnit(s"/api/tasks/${x.id}/automations/${r.id}/run")) { _ =>
+    Toasts.show(s"「${r.name}」を実行しました（数秒で反映されます）")
     dom.window.setTimeout(() => Store.changed(), 3000)
   }
 }
 
 def deleteTask(s: State, props: Props): Unit = t(s).foreach { x =>
   Dialog.confirm(s"${x.key}「${x.title}」を削除しますか？サブタスクも削除されます。", "削除する") {
-    Store.report(Api.deleteTask(x.id)) { _ =>
-      Store.toast(s"${x.key} を削除しました")
+    Toasts.report(Api.deleteTask(x.id)) { _ =>
+      Toasts.show(s"${x.key} を削除しました")
       Store.changed()
       if (props.modal) props.onClose(()) else Router.go(s"/p/${x.key.takeWhile(_ != '-')}/board")
     }
@@ -185,7 +181,7 @@ def addSubtask(s: State): Unit = t(s).foreach(x => Store.createDialog := Some((x
 
 def copyKey(s: State): Unit = t(s).foreach { x =>
   dom.window.navigator.clipboard.writeText(s"${x.key} ${x.title}")
-  Store.toast("タスクIDとタイトルをコピーしました")
+  Toasts.show("タスクIDとタイトルをコピーしました")
 }
 
 def canEdit(s: State) = s.detail.mapC(_.exists(d => Roles.rank(d.role) >= 2))
@@ -228,20 +224,20 @@ def nameOf(id: UUID): String = Fmt.statusName(Store.meta.v, id)
         <template v-for="d in s.detail.mapC(_.toList)">
           <h1 v-if="s.editTitle.mapC(!_)" class="title" @click="if (canEdit(s).v) { s.title := d.task.title; s.editTitle := true }">{{ d.task.title }}</h1>
           <form v-if="s.editTitle" @submit.prevent="saveTitle(s, props)" class="row">
-            <input type="text" v-model="s.title" class="grow title-input" autofocus @keydown.esc="s.editTitle := false">
+            <input type="text" v-model="s.title" class="grow title-input" v-focus @keydown.esc="s.editTitle := false">
             <button type="submit" class="primary small">保存</button><button type="button" class="small" @click="s.editTitle := false">キャンセル</button>
           </form>
           <div class="toolbar row">
             <button v-if="canEdit(s)" class="small" @click="addSubtask(s)">＋ サブタスク</button>
             <button v-if="canEdit(s)" class="small" @click="s.addingLink := !s.addingLink.v">🔗 リンク</button>
             <label v-if="canEdit(s)" class="btn small">📎 添付<input type="file" multiple class="hidden" @change="upload(s, props, event)"></label>
-            <span v-if="s.uploading" class="muted small">アップロード中…</span>
+            <span v-if="s.upload.busy" class="muted small">アップロード中…</span>
           </div>
         </template>
 
         <section v-for="i in s.ident.mapC(_.toList)">
           <h3>説明 <button v-if="computed { canEdit(s).v && !s.editDesc.v }" class="ghost small" @click="editDesc(s)">編集</button></h3>
-          <div v-if="s.editDesc.mapC(!_)" class="rich desc" v-html="descHtml(s)" @dblclick="editDesc(s)"></div>
+          <div v-if="s.editDesc.mapC(!_)" class="rich desc" v-html="descHtml(s)" v-rich="descHtml(s)" @dblclick="editDesc(s)"></div>
           <p v-if="noDesc(s)" class="muted small">説明はありません</p>
           <div v-if="s.editDesc">
             <RichEditor :content="s.descContent.v" :projectId="Some(i.projectId)" :taskId="Some(i.id)" :autofocus="true"
@@ -259,7 +255,7 @@ def nameOf(id: UUID): String = Fmt.statusName(Store.meta.v, id)
                 <tr v-for="c in d.subtasks" :key="c.id" class="clickable" @click='Router.go("/tasks/" + c.key)'>
                   <td class="key">{{ c.key }}</td><td>{{ c.title }}</td>
                   <td><span :class='"badge cat-" + catOf(c.statusId)'>{{ nameOf(c.statusId) }}</span></td>
-                  <td><Avatar :user="c.assignee" :size="20" /></td>
+                  <td><Avatar :user="c.assignee.map(person)" :size="20" /></td>
                 </tr>
               </tbody></table>
             </div>
@@ -274,7 +270,7 @@ def nameOf(id: UUID): String = Fmt.statusName(Store.meta.v, id)
                 <span class="grow">{{ l.target.get.title }}</span>
                 <span :class='"badge cat-" + l.target.get.statusCategory'>{{ l.target.get.statusName }}</span>
               </template>
-              <template v-else><a :href='Fmt.href(l.url.getOrElse(""))' target="_blank" rel="noopener" class="grow">{{ l.title }}</a></template>
+              <template v-else><a :href='Fmt.href(l.url.getOrElse(""))' target="_blank" rel="noopener" class="grow" v-rich="l.url">{{ l.title }}</a></template>
               <button v-if="canEdit(s)" class="ghost small" @click="removeLink(s, props, l)">×</button>
             </div>
             <form v-if="s.addingLink" class="row addlink" @submit.prevent="addLink(s, props)">
@@ -294,7 +290,7 @@ def nameOf(id: UUID): String = Fmt.statusName(Store.meta.v, id)
                   <span v-else class="file-icon">📄</span>
                 </a>
                 <div class="small att-name"><a :href="a.url" target="_blank" rel="noopener">{{ a.fileName }}</a></div>
-                <div class="muted small">{{ Fmt.bytes(a.size) }} <button v-if="canEdit(s)" class="ghost small" @click="removeAttachment(s, props, a)">削除</button></div>
+                <div class="muted small">{{ Formats.bytes(a.size) }} <button v-if="canEdit(s)" class="ghost small" @click="removeAttachment(s, props, a)">削除</button></div>
               </div>
             </div>
           </section>
@@ -329,23 +325,23 @@ def nameOf(id: UUID): String = Fmt.statusName(Store.meta.v, id)
         </template>
         <template v-for="d in s.detail.mapC(_.toList)">
           <div class="field"><span>ステータス</span>
-            <Combo :options="Opt.statuses(statuses.v)" :value="d.task.statusId.toString" :disabled="!canEdit(s).v"
+            <Combo :options="Opts.statuses(statuses.v)" :value="d.task.statusId.toString" :disabled="!canEdit(s).v"
               :onChange='v => patch(s, props, "statusId" -> Json.fromString(v))' />
           </div>
           <div class="two">
             <div class="field"><span>種類</span>
-              <Combo :options="Opt.types" :value="d.task.taskType" :disabled="!canEdit(s).v" :onChange='v => patch(s, props, "taskType" -> Json.fromString(v))' />
+              <Combo :options="Opts.types" :value="d.task.taskType" :disabled="!canEdit(s).v" :onChange='v => patch(s, props, "taskType" -> Json.fromString(v))' />
             </div>
             <div class="field"><span>優先度</span>
-              <Combo :options="Opt.priorities" :value="d.task.priority" :disabled="!canEdit(s).v" :onChange='v => patch(s, props, "priority" -> Json.fromString(v))' />
+              <Combo :options="Opts.priorities" :value="d.task.priority" :disabled="!canEdit(s).v" :onChange='v => patch(s, props, "priority" -> Json.fromString(v))' />
             </div>
           </div>
           <div class="field"><span>担当者</span>
-            <Combo :options="Opt.users(s.audience.v)" :value='d.task.assignee.map(_.id.toString).getOrElse("")' clearLabel="未割り当て"
+            <Combo :options="Opts.users(s.audience.v)" :value='d.task.assignee.map(_.id.toString).getOrElse("")' clearLabel="未割り当て"
               :disabled="!canEdit(s).v" :onChange='v => patch(s, props, "assigneeId" -> opt(v))' />
           </div>
           <div class="field"><span>報告者</span>
-            <Combo :options="Opt.users(s.audience.v)" :value='d.task.reporter.map(_.id.toString).getOrElse("")' clearLabel="なし"
+            <Combo :options="Opts.users(s.audience.v)" :value='d.task.reporter.map(_.id.toString).getOrElse("")' clearLabel="なし"
               :disabled="!canEdit(s).v" :onChange='v => patch(s, props, "reporterId" -> opt(v))' />
           </div>
           <div v-if="Store.helpdesk.mapC(!_)" class="field"><span>スプリント</span>
@@ -387,10 +383,10 @@ def nameOf(id: UUID): String = Fmt.statusName(Store.meta.v, id)
           </div>
           <div class="field"><span>ウォッチャー（{{ d.watchers.size }}）</span>
             <div v-for="w in d.watchers" :key="w.id" class="row small watcher">
-              <Avatar :user="Some(w)" :size="20" /><span class="grow ell">{{ w.name }}</span>
+              <Avatar :user="Some(person(w))" :size="20" /><span class="grow ell">{{ w.name }}</span>
               <button v-if="canEdit(s)" class="ghost small" @click="removeWatcher(s, props, w)" title="ウォッチャーから外す">×</button>
             </div>
-            <Combo v-if="canEdit(s)" :options="Opt.users(watcherCandidates(s).v)" :small="true" :keep="false"
+            <Combo v-if="canEdit(s)" :options="Opts.users(watcherCandidates(s).v)" :small="true" :keep="false"
               placeholder="＋ ウォッチャーを追加（名前で検索）" :onChange="v => addWatcher(s, props, v)" />
             <button class="small" @click="watchToggle(s, props)">{{ if (d.watching) "👁 自分のウォッチをやめる" else "👁 自分もウォッチする" }}</button>
           </div>

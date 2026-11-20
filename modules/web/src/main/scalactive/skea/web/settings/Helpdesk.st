@@ -39,8 +39,8 @@ def mounted(s: State): Unit = load(s)
 
 def save(s: State): Unit = {
   val ds = s.domains.v.split("[,\\s]+").map(_.trim).filter(_.nonEmpty).toList
-  Store.report(Api.putUnit(s"/api/projects/$pid/helpdesk", HelpdeskSettingsReq(s.helpdesk.v, s.guest.v, ds, s.doneDays.v.trim.toIntOption).asJson)) { _ =>
-    Store.toast("保存しました")
+  Toasts.report(Api.putUnit(s"/api/projects/$pid/helpdesk", HelpdeskSettingsReq(s.helpdesk.v, s.guest.v, ds, s.doneDays.v.trim.toIntOption).asJson)) { _ =>
+    Toasts.show("保存しました")
     Store.reloadMeta()
     load(s)
   }
@@ -55,7 +55,7 @@ def domainLabel(s: State, g: RequesterGroupDto): String =
     RequesterGroups.effectiveDomain(s.data.v.toList.flatMap(_.groups), g).fold("")(d => s"@$d（親から）"))
 
 def addGroup(s: State): Unit = if (s.newName.v.trim.nonEmpty)
-  Store.report(Api.post[io.circe.Json](s"/api/projects/$pid/requester-groups", RequesterGroupReq(s.newName.v.trim, parentOf(s.newParent.v), domainOf(s.newDomain.v)).asJson)) { _ =>
+  Toasts.report(Api.post[io.circe.Json](s"/api/projects/$pid/requester-groups", RequesterGroupReq(s.newName.v.trim, parentOf(s.newParent.v), domainOf(s.newDomain.v)).asJson)) { _ =>
     s.newName := ""
     s.newDomain := ""
     load(s)
@@ -69,21 +69,21 @@ def startEdit(s: State, g: RequesterGroupDto): Unit = {
 }
 
 def saveGroup(s: State, g: RequesterGroupDto): Unit =
-  Store.report(Api.putUnit(s"/api/projects/$pid/requester-groups/${g.id}", RequesterGroupReq(s.editName.v.trim, parentOf(s.editParent.v), domainOf(s.editDomain.v)).asJson)) { _ =>
+  Toasts.report(Api.putUnit(s"/api/projects/$pid/requester-groups/${g.id}", RequesterGroupReq(s.editName.v.trim, parentOf(s.editParent.v), domainOf(s.editDomain.v)).asJson)) { _ =>
     s.editing := None
     load(s)
   }
 
 def removeGroup(s: State, g: RequesterGroupDto): Unit =
   Dialog.confirm(s"グループ「${g.name}」を削除しますか？（子のグループも削除され、このグループへの共有は外れます）", "削除する") {
-    Store.report(Api.delete(s"/api/projects/$pid/requester-groups/${g.id}"))(_ => load(s))
+    Toasts.report(Api.delete(s"/api/projects/$pid/requester-groups/${g.id}"))(_ => load(s))
   }
 
 def addMember(s: State, g: RequesterGroupDto, uid: String): Unit = if (uid.nonEmpty)
-  Store.report(Api.putUnit(s"/api/projects/$pid/requester-groups/${g.id}/members", GroupMemberReq(UUID.fromString(uid)).asJson))(_ => load(s))
+  Toasts.report(Api.putUnit(s"/api/projects/$pid/requester-groups/${g.id}/members", GroupMemberReq(UUID.fromString(uid)).asJson))(_ => load(s))
 
 def removeMember(s: State, g: RequesterGroupDto, u: UserBrief): Unit =
-  Store.report(Api.delete(s"/api/projects/$pid/requester-groups/${g.id}/members/${u.id}"))(_ => load(s))
+  Toasts.report(Api.delete(s"/api/projects/$pid/requester-groups/${g.id}/members/${u.id}"))(_ => load(s))
 
 def groups(s: State) = s.data.mapC(_.toList.flatMap(_.groups))
 def tree(s: State) = s.data.mapC(d => HelpGroups.tree(d.toList.flatMap(_.groups)))
@@ -94,7 +94,7 @@ def editParentOpts(s: State, g: RequesterGroupDto) = groups(s).mapC { gs =>
   val ng = desc(g.id) + g.id
   HelpGroups.options(gs.filterNot(x => ng(x.id)))
 }
-def memberOpts(s: State, g: RequesterGroupDto) = s.data.mapC(d => Opt.users(d.toList.flatMap(_.requesters).filterNot(u => g.members.exists(_.id == u.id))))
+def memberOpts(s: State, g: RequesterGroupDto) = s.data.mapC(d => Opts.users(d.toList.flatMap(_.requesters).filterNot(u => g.members.exists(_.id == u.id))))
 def indent(depth: Int): String = s"padding-left:${depth * 1.4}rem"
 def portalUrl: String = s"${dom.window.location.origin}/help/${Store.meta.v.map(_.project.key).getOrElse("")}"
 def requesters(s: State) = s.data.mapC(_.toList.flatMap(_.requesters))
@@ -135,7 +135,7 @@ def isEditing(s: State, g: RequesterGroupDto) = s.editing.mapC(_.contains(g.id))
         <button type="submit" class="primary small">保存</button><button type="button" class="small" @click="s.editing := None">キャンセル</button>
       </form>
       <div class="members">
-        <span v-for="u in x._1.members" :key="u.id" class="chip"><Avatar :user="Some(u)" :size="16" /> {{ u.name }}
+        <span v-for="u in x._1.members" :key="u.id" class="chip"><Avatar :user="Some(person(u))" :size="16" /> {{ u.name }}
           <button v-if="Store.isProjectAdmin" class="ghost small" @click="removeMember(s, x._1, u)" title="グループから外す">×</button></span>
         <Combo v-if="Store.isProjectAdmin" :live="Some(memberOpts(s, x._1))" :small="true" :keep="false" placeholder="＋ ユーザを追加"
           :onChange="v => addMember(s, x._1, v)" />
@@ -151,7 +151,7 @@ def isEditing(s: State, g: RequesterGroupDto) = s.editing.mapC(_.contains(g.id))
 
     <h3>ユーザ（{{ requesters(s).mapC(_.size) }}人）</h3>
     <div class="members">
-      <span v-for="u in requesters(s)" :key="u.id" class="chip"><Avatar :user="Some(u)" :size="16" /> {{ u.name }}</span>
+      <span v-for="u in requesters(s)" :key="u.id" class="chip"><Avatar :user="Some(person(u))" :size="16" /> {{ u.name }}</span>
     </div>
   </section>
 </template>

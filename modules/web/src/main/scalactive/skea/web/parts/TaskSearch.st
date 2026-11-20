@@ -7,7 +7,6 @@ import skea.shared.*
 
 import java.util.UUID
 import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
-import scala.scalajs.js
 import scala.util.{Failure, Success}
 
 // タスクの検索（絞り込み構文・条件の欄・保存した条件・一括変更・CSV）. projectKey があればそのプロジェクトに絞る.
@@ -41,7 +40,7 @@ def run(s: State, props: Props): Unit = {
   s.loading := true
   Api.search(fullQuery(s, props), None, s.limit.v).onComplete {
     case Success(r) => s.result := Some(r); s.loading := false; s.selected := Set.empty; loadStatuses(s)
-    case Failure(e) => Store.error(e); s.loading := false
+    case Failure(e) => Toasts.error(e); s.loading := false
   }
   if (props.projectKey.isEmpty) dom.window.history.replaceState(null, "", "/search?q=" + Api.enc(s.q.v))
 }
@@ -108,7 +107,7 @@ def preset(s: State, props: Props, key: String, from: String, to: String): Unit 
 /** 担当者・報告者の選択肢（値はユーザー名. 自分・未割り当てを先頭に）. */
 def userOpts(s: State, props: Props, unassigned: Boolean) = computed {
   List(Opt("me", "自分", "👤")) ++ (if (unassigned) List(Opt("none", "未割り当て")) else Nil) ++
-    userChoices(s, props).v.map(u => Opt(u.name, u.name, user = Some(u)))
+    userChoices(s, props).v.map(u => Opt(u.name, u.name, user = Some(person(u))))
 }
 val categoryOpts: List[Opt] = StatusCategory.all.map(c => Opt(c, StatusCategory.label(c)))
 val orderOpts: List[Opt] = Opt.of(List("-updated" -> "更新が新しい順", "-created" -> "作成が新しい順", "created" -> "作成が古い順", "due" -> "期日が近い順",
@@ -126,18 +125,18 @@ def daysAgo(n: Int): String = Fmt.addDays(Fmt.today(), -n)
 def save(s: State): Unit = {
   Dialog.prompt("この検索条件の名前", "", "保存") { name =>
     if (name.trim.nonEmpty)
-      Store.report(Api.post[SavedFilterDto]("/api/filters", SavedFilterReq(name.trim, s.q.v).asJson))(f => s.saved := s.saved.v :+ f)
+      Toasts.report(Api.post[SavedFilterDto]("/api/filters", SavedFilterReq(name.trim, s.q.v).asJson))(f => s.saved := s.saved.v :+ f)
   }
 }
 
-def removeSaved(s: State, f: SavedFilterDto): Unit = Store.report(Api.delete(s"/api/filters/${f.id}"))(_ => s.saved := s.saved.v.filterNot(_.id == f.id))
+def removeSaved(s: State, f: SavedFilterDto): Unit = Toasts.report(Api.delete(s"/api/filters/${f.id}"))(_ => s.saved := s.saved.v.filterNot(_.id == f.id))
 
 def toggle(s: State, id: UUID, on: Boolean): Unit = s.selected := (if (on) s.selected.v + id else s.selected.v - id)
 def toggleAll(s: State, on: Boolean): Unit = s.selected := (if (on) s.result.v.toList.flatMap(_.hits.map(_.task.id)).toSet else Set.empty)
 
 def bulk(s: State, props: Props, patch: Json): Unit =
-  Store.report(Api.post[Json]("/api/tasks/bulk", BulkUpdateReq(s.selected.v.toList, patch).asJson)) { r =>
-    Store.toast(s"${r.hcursor.get[Int]("updated").getOrElse(0)} 件を更新しました")
+  Toasts.report(Api.post[Json]("/api/tasks/bulk", BulkUpdateReq(s.selected.v.toList, patch).asJson)) { r =>
+    Toasts.show(s"${r.hcursor.get[Int]("updated").getOrElse(0)} 件を更新しました")
     Store.changed()
     run(s, props)
   }
@@ -172,11 +171,7 @@ def csv(s: State): Unit = {
     List(t.key, TaskType.label(t.taskType), t.title, s.statuses.v.get(t.statusId).map(_._1).getOrElse(""), Priority.label(t.priority), t.assignee.map(_.name).getOrElse(""), t.reporter.map(_.name).getOrElse(""), t.startDate.getOrElse(""),
       t.dueDate.getOrElse(""), t.spentMinutes.toString, Fmt.dateTime(t.updatedAt)).map(Csv.cell).mkString(",")
   }
-  val blob = new dom.Blob(js.Array[dom.BlobPart]("﻿" + (head :: rows).mkString("\r\n")), new dom.BlobPropertyBag { `type` = "text/csv" })
-  val a = dom.document.createElement("a").asInstanceOf[dom.HTMLAnchorElement]
-  a.href = dom.URL.createObjectURL(blob)
-  a.setAttribute("download", "skea-tasks.csv")
-  a.click()
+  Csv.download("skea-tasks.csv", head :: rows)
 }
 
 // ---------------------------------------------------------------- 表示の切り替え（列・グループ化・その場で編集）
@@ -217,13 +212,13 @@ def statusOrder(s: State, t: TaskDto): (Int, String) = {
   (StatusCategory.all.indexOf(st.find(_.id == t.statusId).map(_.category).getOrElse("")), st.find(_.id == t.statusId).map(_.position.toString).getOrElse(""))
 }
 
-def statusOptsOf(s: State, h: SearchHitDto) = s.projStatuses.mapC(m => Opt.statuses(m.getOrElse(h.task.projectId, Nil)))
+def statusOptsOf(s: State, h: SearchHitDto) = s.projStatuses.mapC(m => Opts.statuses(m.getOrElse(h.task.projectId, Nil)))
 
 def labelsOf(t: TaskDto): List[LabelDto] = Store.meta.v.toList.flatMap(_.labels).filter(l => t.labelIds.contains(l.id))
 
 /** その場で編集: 1つのフィールドを変えて結果を取り直す. */
 def edit(s: State, props: Props, h: SearchHitDto, kv: (String, Json)): Unit =
-  Store.report(Api.updateTask(h.task.id, Json.obj(kv))) { _ => Store.changed(); run(s, props) }
+  Toasts.report(Api.updateTask(h.task.id, Json.obj(kv))) { _ => Store.changed(); run(s, props) }
 
 def rowClick(s: State, h: SearchHitDto, c: String): Unit =
   if (!s.edit.v && c != "key" && c != "title") Router.go("/tasks/" + h.task.key)
@@ -293,10 +288,10 @@ def overdue(t: TaskDto): Boolean = Fmt.isOverdue(t.dueDate, t.resolvedAt.isDefin
           :onChange='v => setCond(s, props, "category", ":", v)' />
       </div>
       <div class="cf"><span>種類</span>
-        <Combo :options="Opt.types" :shows='Some(cond(s, "type"))' clearLabel="指定なし" :small="true" :onChange='v => setCond(s, props, "type", ":", v)' />
+        <Combo :options="Opts.types" :shows='Some(cond(s, "type"))' clearLabel="指定なし" :small="true" :onChange='v => setCond(s, props, "type", ":", v)' />
       </div>
       <div class="cf"><span>優先度</span>
-        <Combo :options="Opt.priorities" :shows='Some(cond(s, "priority"))' clearLabel="指定なし" :small="true"
+        <Combo :options="Opts.priorities" :shows='Some(cond(s, "priority"))' clearLabel="指定なし" :small="true"
           :onChange='v => setCond(s, props, "priority", ":", v)' />
       </div>
       <div v-if="labelChoices(props).mapC(_.nonEmpty)" class="cf"><span>ラベル</span>
@@ -354,7 +349,7 @@ def overdue(t: TaskDto): Boolean = Fmt.isOverdue(t.dueDate, t.resolvedAt.isDefin
       <span class="small">{{ s.selected.mapC(_.size.toString) }} 件を選択:</span>
       <Combo :live="Some(statusNames.mapC(Opt.names))" :keep="false" :small="true" placeholder="ステータスを変更…"
         :onChange="v => { s.bulkStatus := v; bulkStatus(s, props) }" />
-      <Combo :live='Some(members.mapC(us => Opt("none", "未割り当て") :: Opt.users(us)))' :keep="false" :small="true" placeholder="担当者を変更…"
+      <Combo :live='Some(members.mapC(us => Opt("none", "未割り当て") :: Opts.users(us)))' :keep="false" :small="true" placeholder="担当者を変更…"
         :onChange="v => { s.bulkAssignee := v; bulkAssignee(s, props) }" />
     </div>
     <p class="muted small">{{ total(s) }} {{ s.loading.mapC(l => if (l) "検索中…" else "") }}</p>
@@ -386,7 +381,7 @@ def overdue(t: TaskDto): Boolean = Fmt.isOverdue(t.dueDate, t.resolvedAt.isDefin
                 <div v-if="h.snippet.isDefined" class="muted small snippet" v-html='h.snippet.getOrElse("")'></div>
               </template>
               <template v-if='c == "type"'>
-                <Combo v-if="s.edit" :options="Opt.types" :value="h.task.taskType" :small="true" :onChange='v => edit(s, props, h, "taskType" -> Json.fromString(v))' />
+                <Combo v-if="s.edit" :options="Opts.types" :value="h.task.taskType" :small="true" :onChange='v => edit(s, props, h, "taskType" -> Json.fromString(v))' />
                 <span v-else :title="TaskType.label(h.task.taskType)">{{ TaskType.icon(h.task.taskType) }} {{ TaskType.label(h.task.taskType) }}</span>
               </template>
               <template v-if='c == "status"'>
@@ -395,13 +390,13 @@ def overdue(t: TaskDto): Boolean = Fmt.isOverdue(t.dueDate, t.resolvedAt.isDefin
                 <span v-else :class="statusCls(s, h.task)">{{ statusName(s, h.task) }}</span>
               </template>
               <template v-if='c == "priority"'>
-                <Combo v-if="s.edit" :options="Opt.priorities" :value="h.task.priority" :small="true" :onChange='v => edit(s, props, h, "priority" -> Json.fromString(v))' />
+                <Combo v-if="s.edit" :options="Opts.priorities" :value="h.task.priority" :small="true" :onChange='v => edit(s, props, h, "priority" -> Json.fromString(v))' />
                 <span v-else>{{ Priority.icon(h.task.priority) }} {{ Priority.label(h.task.priority) }}</span>
               </template>
               <template v-if='c == "assignee"'>
-                <Combo v-if="s.edit" :live="Some(userChoices(s, props).mapC(Opt.users))" :value='h.task.assignee.map(_.id.toString).getOrElse("")' clearLabel="未割り当て"
+                <Combo v-if="s.edit" :live="Some(userChoices(s, props).mapC(Opts.users))" :value='h.task.assignee.map(_.id.toString).getOrElse("")' clearLabel="未割り当て"
                   :small="true" :onChange='v => edit(s, props, h, "assigneeId" -> (if (v.isEmpty) Json.Null else Json.fromString(v)))' />
-                <span v-else class="nowrap"><Avatar :user="h.task.assignee" :size="20" /> {{ h.task.assignee.map(_.name).getOrElse("") }}</span>
+                <span v-else class="nowrap"><Avatar :user="h.task.assignee.map(person)" :size="20" /> {{ h.task.assignee.map(_.name).getOrElse("") }}</span>
               </template>
               <span v-if='c == "reporter"' class="nowrap">{{ h.task.reporter.map(_.name).getOrElse("") }}</span>
               <span v-if='c == "labels"'><span v-for="l in labelsOf(h.task)" class="label-chip" :style='"background:" + l.color'>{{ l.name }}</span></span>

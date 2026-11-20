@@ -25,7 +25,7 @@ def parentKey(props: Props): String = props.task.parentId.flatMap(_ => Option("â
       <span v-if="props.task.subtaskCount > 0" class="muted">{{ subtasks(props) }}</span>
       <span v-if="props.task.commentCount > 0" class="muted">ðŸ’¬ {{ props.task.commentCount }}</span>
       <span class="grow"></span>
-      <Avatar :user="props.task.assignee" :size="22" />
+      <Avatar :user="props.task.assignee.map(person)" :size="22" />
     </div>
   </div>
 </template>

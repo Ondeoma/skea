@@ -35,7 +35,7 @@ case class State(q: RV[String] = RV("is:open"),
 
 val PageSize = 50
 
-def initState() = State(q = RV(Option(new dom.URL(dom.window.location.href).searchParams.get("q")).getOrElse("is:open")))
+def initState() = State(q = RV(Router.queryParam("q").v.getOrElse("is:open")))
 
 def mounted(s: State, props: Props): Unit = {
   run(s, props)
@@ -53,7 +53,7 @@ def run(s: State, props: Props, more: Boolean = false): Unit = {
   Api.get[HelpSearchResultDto](s"/api/help/projects/${props.projectId}/search" + Api.query("q" -> Some(q), "limit" -> Some(PageSize.toString),
     "offset" -> Some(offset.toString))).onComplete { r =>
     s.loading := false
-    r.fold(Store.error, res => {
+    r.fold(Toasts.error, res => {
       s.error := res.error.getOrElse("")
       s.hits := (if (more) s.hits.v ++ res.hits else res.hits)
       s.total := res.total

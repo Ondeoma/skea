@@ -13,10 +13,10 @@ def initState() = State()
 def statuses = Store.meta.mapC(_.map(_.statuses).getOrElse(Nil))
 
 def save(st: StatusDto, name: String, cat: String, color: String): Unit =
-  Store.report(Api.putUnit(s"/api/projects/${Store.pid}/statuses/${st.id}", StatusReq(name, cat, Some(color)).asJson)) { _ => Store.reloadMeta(); Store.changed() }
+  Toasts.report(Api.putUnit(s"/api/projects/${Store.pid}/statuses/${st.id}", StatusReq(name, cat, Some(color)).asJson)) { _ => Store.reloadMeta(); Store.changed() }
 
 def add(s: State): Unit =
-  Store.report(Api.post[StatusDto](s"/api/projects/${Store.pid}/statuses", StatusReq(s.name.v, s.cat.v, Some(s.color.v)).asJson)) { _ => s.name := ""; Store.reloadMeta() }
+  Toasts.report(Api.post[StatusDto](s"/api/projects/${Store.pid}/statuses", StatusReq(s.name.v, s.cat.v, Some(s.color.v)).asJson)) { _ => s.name := ""; Store.reloadMeta() }
 
 def move(st: StatusDto, d: Int): Unit = {
   val ids = statuses.v.map(_.id)
@@ -24,7 +24,7 @@ def move(st: StatusDto, d: Int): Unit = {
   val j = i + d
   if (j >= 0 && j < ids.size) {
     val re = ids.updated(i, ids(j)).updated(j, ids(i))
-    Store.report(Api.putUnit(s"/api/projects/${Store.pid}/statuses/order", ReorderReq(re).asJson))(_ => Store.reloadMeta())
+    Toasts.report(Api.putUnit(s"/api/projects/${Store.pid}/statuses/order", ReorderReq(re).asJson))(_ => Store.reloadMeta())
   }
 }
 
@@ -32,7 +32,7 @@ def remove(st: StatusDto): Unit = {
   val others = statuses.v.filterNot(_.id == st.id)
   Dialog.choose(s"「${st.name}」を削除します。このステータスのタスクの移動先を選んでください。", others.map(o => o.id.toString -> o.name), "削除する", danger = true) { to =>
     others.find(_.id.toString == to).foreach { t =>
-      Store.report(Api.delete(s"/api/projects/${Store.pid}/statuses/${st.id}?moveTo=${t.id}")) { _ => Store.reloadMeta(); Store.changed() }
+      Toasts.report(Api.delete(s"/api/projects/${Store.pid}/statuses/${st.id}?moveTo=${t.id}")) { _ => Store.reloadMeta(); Store.changed() }
     }
   }
 }

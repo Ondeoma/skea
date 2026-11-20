@@ -23,7 +23,7 @@ case class State(meta: RV[Option[ProjectMetaDto]] = RV(None),
                  fields: RV[Map[String, Json]] = RV(Map.empty),
                  editor: RV[Option[EditorHandle]] = RV(None),
                  more: RV[Boolean] = RV(false),
-                 busy: RV[Boolean] = RV(false),
+                 act: ActionState,
                  error: RV[String] = RV(""),
                  keepOpen: RV[Boolean] = RV(false),
                  templates: RV[List[TemplateDto]] = RV(Nil),
@@ -34,10 +34,10 @@ case class State(meta: RV[Option[ProjectMetaDto]] = RV(None),
                  tplName: RV[String] = RV(""),
                  tplShared: RV[Boolean] = RV(false))
 
-def initState() = State()
+def initState() = State(act = useAction())
 
 def mounted(s: State, props: Props): Unit = {
-  Store.report(Api.meta(props.projectId)) { m =>
+  Toasts.report(Api.meta(props.projectId)) { m =>
     s.meta := Some(m)
     s.statusId := m.statuses.headOption.map(_.id.toString).getOrElse("")
     // 開いているボードのスプリントに入れる（親があれば親と同じにする）
@@ -87,10 +87,10 @@ def saveTemplate(s: State, props: Props): Unit = {
       s.labels.v.map(UUID.fromString), s.fields.v.filter((_, v) => !v.isNull), s.template.v.toList.flatMap(_.subtasks), dueIn,
       Some(s.priority.v), Some(s.taskType.v))
     val url = if (s.tplShared.v) s"/api/projects/${props.projectId}/templates" else "/api/me/templates"
-    Store.report(Api.post[TemplateDto](url, r.asJson)) { _ =>
+    Toasts.report(Api.post[TemplateDto](url, r.asJson)) { _ =>
       s.saving := false
       s.tplName := ""
-      Store.toast(s"テンプレート「$name」を保存しました")
+      Toasts.show(s"テンプレート「$name」を保存しました")
       loadTemplates(s, props)
     }
   }
@@ -102,7 +102,6 @@ def submit(s: State, props: Props): Unit = {
   s.error := ""
   if (s.title.v.trim.isEmpty) s.error := "タイトルを入力してください"
   else {
-    s.busy := true
     val desc = s.editor.v.filterNot(_.isEmpty()).map(h => Editor.fromJs(h.getJSON()))
     val r = CreateTaskReq(
       title = s.title.v.trim,
@@ -118,19 +117,17 @@ def submit(s: State, props: Props): Unit = {
       taskType = Some(s.taskType.v),
       fields = s.fields.v.filter((_, v) => !v.isNull && !v.asString.contains("") && !v.asArray.exists(_.isEmpty))
     )
-    Api.createTask(props.projectId, r).onComplete {
+    s.act.run(Api.createTask(props.projectId, r)).onComplete {
       case Success(t) =>
-        s.busy := false
         // テンプレートのサブタスク
         s.template.v.toList.flatMap(_.subtasks).foldLeft(scala.concurrent.Future.successful(())) { (acc, st) =>
           acc.flatMap(_ => Api.createTask(props.projectId, CreateTaskReq(title = st, parentId = Some(t.id), sprintId = r.sprintId,
             assigneeId = r.assigneeId)).map(_ => ()))
-        }.failed.foreach(Store.error)
-        Store.toast(s"${t.key} を作成しました", Some(s"/tasks/${t.key}"))
+        }.failed.foreach(Toasts.error)
+        Toasts.show(s"${t.key} を作成しました", Some(s"/tasks/${t.key}"))
         Store.changed()
         if (s.keepOpen.v) { s.title := ""; s.editor.v.foreach(_.clear()) } else close()
       case Failure(e) =>
-        s.busy := false
         s.error := e.getMessage
     }
   }
@@ -138,7 +135,7 @@ def submit(s: State, props: Props): Unit = {
 
 def heading(props: Props): String = if (props.parentId.isDefined) "サブタスクを作成" else "タスクを作成"
 def projectName(s: State) = s.meta.mapC(_.map(m => s"${m.project.key} ${m.project.name}").getOrElse(""))
-def statusOpts(s: State) = s.meta.mapC(m => Opt.statuses(m.toList.flatMap(_.statuses)))
+def statusOpts(s: State) = s.meta.mapC(m => Opts.statuses(m.toList.flatMap(_.statuses)))
 def sprintOpts(s: State) = s.meta.mapC(_.toList.flatMap(_.sprints).map(sp => Opt(sp.id.toString, sp.name, hint = if (sp.state == "active") "進行中" else "")))
 def templateOpts(s: State) = s.templates.mapC(_.map(t => Opt(t.id.toString, t.name,
   hint = (Option.when(t.personal)("自分用").toList ++ Option.when(t.subtasks.nonEmpty)(s"サブタスク ${t.subtasks.size}件")).mkString(" · "))))
@@ -158,13 +155,13 @@ def fields(s: State) = s.meta.mapC(_.map(_.fields).getOrElse(Nil))
     </div>
     <div class="field">
       <span>タイトル</span>
-      <input type="text" v-model="s.title" placeholder="何をしますか？" autofocus>
+      <input type="text" v-model="s.title" placeholder="何をしますか？" v-focus>
     </div>
     <div class="grid">
-      <div class="field"><span>種類</span><Combo :bind="Some(s.taskType)" :options="Opt.types" /></div>
-      <div class="field"><span>優先度</span><Combo :bind="Some(s.priority)" :options="Opt.priorities" /></div>
+      <div class="field"><span>種類</span><Combo :bind="Some(s.taskType)" :options="Opts.types" /></div>
+      <div class="field"><span>優先度</span><Combo :bind="Some(s.priority)" :options="Opts.priorities" /></div>
       <div class="field"><span>ステータス</span><Combo :bind="Some(s.statusId)" :live="Some(statusOpts(s))" /></div>
-      <div class="field"><span>担当者</span><Combo :bind="Some(s.assignee)" :live="Some(s.audience.mapC(Opt.users))" clearLabel="未割り当て" /></div>
+      <div class="field"><span>担当者</span><Combo :bind="Some(s.assignee)" :live="Some(s.audience.mapC(Opts.users))" clearLabel="未割り当て" /></div>
       <div v-if="s.meta.mapC(!_.exists(_.project.helpdesk))" class="field"><span>スプリント</span><Combo :bind="Some(s.sprint)" :live="Some(sprintOpts(s))" clearLabel="バックログ" /></div>
       <label class="field"><span>期日</span><input type="date" v-model="s.due"></label>
     </div>
@@ -205,7 +202,7 @@ def fields(s: State) = s.meta.mapC(_.map(_.fields).getOrElse(Nil))
       <a v-if="isTop(props)" href="#" class="small" @click.prevent="s.saving := !s.saving.v">テンプレートとして保存</a>
       <span class="grow"></span>
       <button type="button" @click="close()">キャンセル</button>
-      <button type="submit" class="primary" :disabled="s.busy">作成</button>
+      <button type="submit" class="primary" :disabled="s.act.busy">作成</button>
     </div>
   </form>
 </template>

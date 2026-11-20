@@ -35,12 +35,12 @@ def save(s: State): Unit = {
     case Some(x) => Api.putUnit(s"/api/projects/${Store.pid}/fields/${x.id}", r.asJson)
     case None    => Api.post[CustomFieldDto](s"/api/projects/${Store.pid}/fields", r.asJson).map(_ => ())(scala.scalajs.concurrent.JSExecutionContext.Implicits.queue)
   }
-  Store.report(f) { _ => s.editing := None; Store.reloadMeta() }
+  Toasts.report(f) { _ => s.editing := None; Store.reloadMeta() }
 }
 
 def remove(f: CustomFieldDto): Unit =
   Dialog.confirm(s"フィールド「${f.name}」を削除しますか？入力済みの値も消えます。") {
-    Store.report(Api.delete(s"/api/projects/${Store.pid}/fields/${f.id}"))(_ => Store.reloadMeta())
+    Toasts.report(Api.delete(s"/api/projects/${Store.pid}/fields/${f.id}"))(_ => Store.reloadMeta())
   }
 
 def hasOptions(s: State) = s.kind.mapC(FieldKind.hasOptions)

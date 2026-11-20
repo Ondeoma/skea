@@ -23,9 +23,9 @@ def mounted(s: State, props: Props): Unit = {
 }
 
 def save(s: State, props: Props, groups: List[UUID], users: List[UUID]): Unit =
-  Store.report(Api.put[TaskSharesDto](s"/api/tasks/${props.taskId}/shares", TaskSharesReq(groups, users, s.notifyNew.v, Some(s.watch.v)).asJson)) { r =>
+  Toasts.report(Api.put[TaskSharesDto](s"/api/tasks/${props.taskId}/shares", TaskSharesReq(groups, users, s.notifyNew.v, Some(s.watch.v)).asJson)) { r =>
     s.shares := r
-    Store.toast(if (s.notifyNew.v) "共有先を変えました（新しく見える人に通知しました）" else "共有先を変えました")
+    Toasts.show(if (s.notifyNew.v) "共有先を変えました（新しく見える人に通知しました）" else "共有先を変えました")
     Store.changed()
     props.onChanged(())
   }
@@ -53,7 +53,7 @@ def options(s: State) = computed {
   val cur = s.shares.v
   val gs = st.toList.flatMap(_.groups)
   HelpGroups.options(gs).filterNot(o => cur.groups.exists(_.id.toString == o.value)).map(o => o.copy(value = "g:" + o.value)) ++
-    st.toList.flatMap(_.requesters).filterNot(u => cur.users.exists(_.id == u.id)).map(u => Opt("u:" + u.id, u.name, user = Some(u)))
+    st.toList.flatMap(_.requesters).filterNot(u => cur.users.exists(_.id == u.id)).map(u => Opt("u:" + u.id, u.name, user = Some(person(u))))
 }
 
 def groupName(s: State, g: RequesterGroupDto): String = HelpGroups.path(s.settings.v.toList.flatMap(_.groups), g)
@@ -67,7 +67,7 @@ def empty(s: State) = s.shares.mapC(x => x.groups.isEmpty && x.users.isEmpty)
       <button v-if="props.canEdit" class="ghost small" @click="removeGroup(s, props, g.id)" title="共有をやめる">×</button>
     </div>
     <div v-for="u in s.shares.mapC(_.users)" :key="u.id" class="row small">
-      <Avatar :user="Some(u)" :size="20" /><span class="grow ell">{{ u.name }}</span>
+      <Avatar :user="Some(person(u))" :size="20" /><span class="grow ell">{{ u.name }}</span>
       <button v-if="props.canEdit" class="ghost small" @click="removeUser(s, props, u.id)" title="共有をやめる">×</button>
     </div>
     <p v-if="empty(s)" class="muted small">起票者のほかには見えません</p>

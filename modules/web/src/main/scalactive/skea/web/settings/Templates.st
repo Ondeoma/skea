@@ -53,11 +53,11 @@ def saveR(s: State): Unit = {
     case Some(r) => Api.putUnit(s"/api/recurring/${r.id}", req.asJson)
     case None    => Api.post[Json](s"/api/projects/${Store.pid}/recurring", req.asJson).map(_ => ())
   }
-  Store.report(f) { _ => s.rEditing := None; load(s) }
+  Toasts.report(f) { _ => s.rEditing := None; load(s) }
 }
 
 def removeR(s: State, r: RecurringDto): Unit =
-  Dialog.confirm(s"「${r.templateName}」の繰り返しをやめますか？", "やめる") { Store.report(Api.delete(s"/api/recurring/${r.id}"))(_ => load(s)) }
+  Dialog.confirm(s"「${r.templateName}」の繰り返しをやめますか？", "やめる") { Toasts.report(Api.delete(s"/api/recurring/${r.id}"))(_ => load(s)) }
 
 val weekdayOpts: List[Opt] = (1 to 7).toList.map(i => Opt(i.toString, Frequency.weekdays(i - 1) + "曜日"))
 val monthdayOpts: List[Opt] = (1 to 31).toList.map(i => Opt(i.toString, s"${i}日"))

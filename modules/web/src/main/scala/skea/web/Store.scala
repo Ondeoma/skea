@@ -8,9 +8,6 @@ import java.util.UUID
 import scala.concurrent.Future
 import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
 import scala.scalajs.js
-import scala.util.{Failure, Success}
-
-final case class Toast(id: Int, text: String, link: Option[String], error: Boolean)
 
 /** 画面全体で共有する状態と、変更の自動同期（SSE で知らせを受けて取りに行く. つながらないときは15秒ごと）. */
 object Store {
@@ -28,7 +25,6 @@ object Store {
   /** 窓口の画面の表示を取り直すきっかけ（自分への通知が届いたとき）. */
   val helpTick: RV[Int] = RV(0)
   val unread: RV[UnreadDto] = RV(UnreadDto(0, 0))
-  val toasts: RV[List[Toast]] = RV(Nil)
 
   /** 表示中のプロジェクトの設定（ステータス・ラベル・スプリント・メンバーなど）. */
   val meta: RV[Option[ProjectMetaDto]] = RV(None)
@@ -40,7 +36,6 @@ object Store {
   val createDialog: RV[Option[(UUID, Option[UUID])]] = RV(None)
 
   private var since: Long = 0L
-  private var toastSeq = 0
   private var audienceCache: Map[UUID, List[UserBrief]] = Map.empty
   private var groupCache: Map[UUID, List[MentionGroupDto]] = Map.empty
 
@@ -58,28 +53,6 @@ object Store {
 
   /** システム管理者か. */
   def isAdmin = me.mapC(_.exists(_.isAdmin))
-
-  // ---------------------------------------------------------------- トースト
-
-  def toast(text: String, link: Option[String] = None, error: Boolean = false): Unit = {
-    toastSeq += 1
-    val t = Toast(toastSeq, text, link, error)
-    toasts := (toasts.v :+ t).takeRight(5)
-    dom.window.setTimeout(() => dismiss(t.id), if (error) 9000 else 6000)
-  }
-
-  def dismiss(id: Int): Unit = toasts := toasts.v.filterNot(_.id == id)
-
-  def error(e: Throwable): Unit = e match {
-    case ApiError(401, _) => ()
-    case other => toast(other.getMessage, error = true)
-  }
-
-  /** Future の失敗をトーストで知らせる. */
-  def report[A](f: Future[A])(ok: A => Unit): Unit = f.onComplete {
-    case Success(a) => ok(a)
-    case Failure(e) => error(e)
-  }
 
   // ---------------------------------------------------------------- 読み込み
 
@@ -164,7 +137,7 @@ object Store {
               )
           )
           val others = notable.filterNot(e => e.actor.map(_.id) == myId && e.via == "web")
-          others.takeRight(3).foreach(e => toast(describe(e), e.taskKey.map(k => s"/tasks/$k")))
+          others.takeRight(3).foreach(e => Toasts.show(describe(e), e.taskKey.map(k => s"/tasks/$k")))
           if (c.events.exists(e => e.kind.startsWith("sprint.") || e.kind.startsWith("project."))) reloadMeta()
           tick := tick.v + 1
         }
@@ -217,21 +190,6 @@ object Store {
 
 }
 
-/** DOM のイベント・クリップボードの補助. */
-object Dom {
-
-  /** 入力欄（input・select・textarea）の値. */
-  def value(e: dom.Event): String = e.target.asInstanceOf[js.Dynamic].value.asInstanceOf[String]
-
-  def checked(e: dom.Event): Boolean = e.target.asInstanceOf[dom.HTMLInputElement].checked
-
-  def copy(text: String, message: String = "コピーしました"): Unit = {
-    dom.window.navigator.clipboard.writeText(text)
-    Store.toast(message)
-  }
-
-}
-
 /** 表示の補助. */
 object Fmt {
 
@@ -269,11 +227,6 @@ object Fmt {
     math.round((new js.Date(to + "T00:00:00").getTime() - new js.Date(from + "T00:00:00").getTime()) / 86400000).toInt
 
   def isOverdue(due: Option[String], done: Boolean): Boolean = !done && due.exists(_ < today())
-
-  def initials(name: String): String = name.trim.take(1)
-
-  def bytes(n: Long): String =
-    if (n < 1024) s"$n B" else if (n < 1024 * 1024) f"${n / 1024.0}%.1f KB" else f"${n / 1024.0 / 1024.0}%.1f MB"
 
   def statusName(m: Option[ProjectMetaDto], id: UUID): String =
     m.flatMap(_.statuses.find(_.id == id)).map(_.name).getOrElse("")
@@ -422,71 +375,6 @@ object Flip {
 
 }
 
-/** 画面内のダイアログ（ブラウザ標準の confirm・prompt・alert の代わり）. 表示は parts/DialogHost.st. */
-final case class DialogReq(message: String,
-                           okLabel: String,
-                           danger: Boolean,
-                           input: Option[RV[String]],
-                           choices: List[(String, String)],
-                           cancel: Boolean,
-                           onOk: String => Unit,
-                           onCancel: () => Unit)
-
-object Dialog {
-
-  val current: RV[Option[DialogReq]] = RV(None)
-
-  private def open(r: DialogReq): Unit = current := Some(r)
-
-  /** 確認（OK を押したら f）. */
-  def confirm(message: String, ok: String = "OK", danger: Boolean = true)(f: => Unit): Unit =
-    open(DialogReq(message, ok, danger, None, Nil, cancel = true, _ => f, () => ()))
-
-  /** 文字の入力（OK を押したら入力した値で f）. */
-  def prompt(message: String, default: String = "", ok: String = "OK")(f: String => Unit): Unit =
-    open(DialogReq(message, ok, danger = false, Some(RV(default)), Nil, cancel = true, f, () => ()))
-
-  /** 選択肢から選ぶ（choices は 値 → 表示名）. */
-  def choose(message: String,
-             choices: List[(String, String)],
-             ok: String = "OK",
-             danger: Boolean = false)(f: String => Unit): Unit =
-    open(DialogReq(
-      message,
-      ok,
-      danger,
-      Some(RV(choices.headOption.map(_._1).getOrElse(""))),
-      choices,
-      cancel = true,
-      f,
-      () => ()
-    ))
-
-  def alert(message: String): Unit =
-    open(DialogReq(message, "OK", danger = false, None, Nil, cancel = false, _ => (), () => ()))
-
-  def close(ok: Boolean): Unit = current.v.foreach { r =>
-    current := None
-    if (ok) r.onOk(r.input.map(_.v).getOrElse("")) else r.onCancel()
-  }
-
-  /** 文字の入力（エディタ用）. OK なら入力した値、キャンセルなら null の Promise. */
-  def promptJs(message: String, default: String): js.Promise[js.Any] =
-    new js.Promise[js.Any]((resolve, _) =>
-      open(DialogReq(
-        message,
-        "OK",
-        danger = false,
-        Some(RV(Option(default).getOrElse(""))),
-        Nil,
-        cancel = true,
-        v => resolve(v),
-        () => resolve(null)
-      ))
-    )
-
-}
-
 /** この端末だけの表示の設定（localStorage. 使えないときは既定値）. */
 object Prefs extends sbirds.web.LocalPrefs("skea")
 
@@ -610,37 +498,15 @@ object TouchDnd {
 /** 画面の色（自動 = OS の設定、ライト、ダーク）. この端末に記憶する. */
 object Theme extends sbirds.web.ThemeSwitch(Prefs)
 
-/** オートコンプリート（parts/Combo.st）の選択肢. icon は前に付ける文字、user はアイコン、color はラベルの色. */
-final case class Opt(value: String,
-                     label: String,
-                     icon: String = "",
-                     user: Option[UserBrief] = None,
-                     color: String = "",
-                     hint: String = "")
-
-object Opt {
-  def users(us: List[UserBrief]): List[Opt] = us.map(u => Opt(u.id.toString, u.name, user = Some(u)))
-  def of(xs: List[(String, String)]): List[Opt] = xs.map((v, l) => Opt(v, l))
-
-  /** 値と表示が同じ選択肢. */
-  def names(xs: List[String]): List[Opt] = xs.map(x => Opt(x, x))
+/** オートコンプリート（parts/Combo.st）の skea の選択肢. */
+object Opts {
+  def users(us: List[UserBrief]): List[Opt] = Opt.people(us.map(person))
   def statuses(ss: List[StatusDto]): List[Opt] = ss.map(s => Opt(s.id.toString, s.name, color = s.color))
   val priorities: List[Opt] = Priority.all.map(p => Opt(p, Priority.label(p), Priority.icon(p)))
   val types: List[Opt] = TaskType.all.map(t => Opt(t, TaskType.label(t), TaskType.icon(t)))
 }
 
-/** カスタム絵文字（リアクション用. 一度だけ読む）. */
+/** カスタム絵文字（リアクション用. sbirds-lib の CustomEmojis）. */
 object Emojis {
-
-  val custom: RV[List[CustomEmojiDto]] = RV(Nil)
-  private var loaded = false
-
-  def load(force: Boolean = false): Unit = if (!loaded || force) {
-    loaded = true
-    Api.get[List[CustomEmojiDto]]("/api/emoji").foreach(custom := _)
-  }
-
-  /** ":name:" ならカスタム絵文字の画像の URL. */
-  def image(e: String): Option[String] = Reactions.customName(e).map(CustomEmoji.url)
-
+  export sbirds.web.CustomEmojis.{custom, image, load}
 }

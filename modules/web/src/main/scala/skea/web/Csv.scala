@@ -1,5 +1,9 @@
 package skea.web
 
+import org.scalajs.dom
+
+import scala.scalajs.js
+
 /** CSV の読み書き（RFC 4180. "..." の中の改行・"" に対応. 先頭の BOM は捨てる）. */
 object Csv {
 
@@ -39,5 +43,15 @@ object Csv {
 
   /** 書き出す値（= + - @ などで始まる値は、表計算ソフトで数式として動かないよう先頭に ' を付ける）. */
   def cell(v: String): String = quote(if (v.nonEmpty && "=+-@\t\r".contains(v.charAt(0))) "'" + v else v)
+
+  /** 行（書き出した文字列）を CSV のファイルとして保存させる（表計算ソフトが UTF-8 と分かるよう BOM を付ける）. */
+  def download(fileName: String, lines: List[String]): Unit =
+    Dom.download(
+      new dom.Blob(
+        js.Array[dom.BlobPart]("\uFEFF" + lines.mkString("\r\n")),
+        new dom.BlobPropertyBag { `type` = "text/csv" }
+      ),
+      fileName
+    )
 
 }

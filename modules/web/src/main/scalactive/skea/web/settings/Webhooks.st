@@ -39,11 +39,11 @@ def mounted(s: State): Unit = {
   load(s)
   Api.get[List[LinkServiceDto]]("/api/integrations/links").foreach { ls =>
     s.stui := ls.find(_.provider == "stui")
-    val q = dom.window.location.search
-    if (q.contains("integration=stui") && Store.isProjectAdmin.v) {
+    val q = Router.query.v
+    if (q.get("integration").contains("stui") && Store.isProjectAdmin.v) {
       dom.window.history.replaceState(null, "", dom.window.location.pathname)
-      if (q.contains("result=connected")) edit(s, None, WebhookKind.Stui)
-      else Store.toast(s"${AppNames.nameOf("stui")} と連携できませんでした", error = true)
+      if (q.get("result").contains("connected")) edit(s, None, WebhookKind.Stui)
+      else Toasts.show(s"${AppNames.nameOf("stui")} と連携できませんでした", error = true)
     }
   }
 }
@@ -92,15 +92,15 @@ def save(s: State): Unit = {
     case Some(w) => Api.putUnit(s"/api/webhooks/${w.id}", r.asJson)
     case None    => Api.post[WebhookDto](s"/api/projects/${Store.pid}/webhooks", r.asJson).map(_ => ())
   }
-  Store.report(f) { _ => s.editing := None; load(s) }
+  Toasts.report(f) { _ => s.editing := None; load(s) }
 }
 
 def remove(s: State, w: WebhookDto): Unit =
-  Dialog.confirm(s"Webhook「${w.name}」を削除しますか？") { Store.report(Api.delete(s"/api/webhooks/${w.id}"))(_ => load(s)) }
+  Dialog.confirm(s"Webhook「${w.name}」を削除しますか？") { Toasts.report(Api.delete(s"/api/webhooks/${w.id}"))(_ => load(s)) }
 
-def test(w: WebhookDto): Unit = Store.report(Api.post[Json](s"/api/webhooks/${w.id}/test")) { r =>
+def test(w: WebhookDto): Unit = Toasts.report(Api.post[Json](s"/api/webhooks/${w.id}/test")) { r =>
   val ok = r.hcursor.get[Boolean]("ok").getOrElse(false)
-  Store.toast(if (ok) s"送信できました（HTTP ${r.hcursor.get[Int]("statusCode").getOrElse(0)}）" else s"送信できませんでした: ${r.hcursor.get[String]("result").getOrElse("")}", error = !ok)
+  Toasts.show(if (ok) s"送信できました（HTTP ${r.hcursor.get[Int]("statusCode").getOrElse(0)}）" else s"送信できませんでした: ${r.hcursor.get[String]("result").getOrElse("")}", error = !ok)
 }
 
 def showDeliveries(s: State, w: WebhookDto): Unit =

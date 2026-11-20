@@ -37,16 +37,16 @@ def load(s: State): Unit = {
 def loadAgents(s: State): Unit = Api.get[List[AgentAccountDto]]("/api/admin/agents").foreach(s.agents := _)
 
 def createAgent(s: State): Unit =
-  Store.report(Api.post[AgentAccountDto]("/api/admin/agents", CreateAgentReq(s.agentName.v).asJson)) { a =>
+  Toasts.report(Api.post[AgentAccountDto]("/api/admin/agents", CreateAgentReq(s.agentName.v).asJson)) { a =>
     s.agentName := ""; loadAgents(s); openKeyForm(s, a.id)
   }
 
 def renameAgent(s: State, a: AgentAccountDto): Unit = Dialog.prompt("エージェント専用アカウントの名前", a.name, "変更") { n =>
-  Store.report(Api.patchUnit(s"/api/admin/agents/${a.id}", UpdateAgentReq(Some(n), None).asJson))(_ => loadAgents(s))
+  Toasts.report(Api.patchUnit(s"/api/admin/agents/${a.id}", UpdateAgentReq(Some(n), None).asJson))(_ => loadAgents(s))
 }
 
 def setAgentDisabled(s: State, a: AgentAccountDto, on: Boolean): Unit = {
-  def run(): Unit = Store.report(Api.patchUnit(s"/api/admin/agents/${a.id}", UpdateAgentReq(None, Some(on)).asJson))(_ => loadAgents(s))
+  def run(): Unit = Toasts.report(Api.patchUnit(s"/api/admin/agents/${a.id}", UpdateAgentReq(None, Some(on)).asJson))(_ => loadAgents(s))
   if (on) Dialog.confirm(s"「${a.name}」を無効にしますか？このアカウントのキーはすべて使えなくなります（有効に戻すと再び使えます）。", "無効にする")(run())
   else run()
 }
@@ -63,7 +63,7 @@ def issueKey(s: State, a: AgentAccountDto): Unit = {
 
 def revokeKey(s: State, a: AgentAccountDto, k: AgentKeyDto): Unit =
   Dialog.confirm(s"「${a.name}」のキー「${k.name}（${k.prefix}…）」を失効させますか？このキーを使っているエージェントは使えなくなります。", "失効させる") {
-    Store.report(Api.delete(s"/api/admin/agents/${a.id}/keys/${k.id}"))(_ => loadAgents(s))
+    Toasts.report(Api.delete(s"/api/admin/agents/${a.id}/keys/${k.id}"))(_ => loadAgents(s))
   }
 
 def keyFormOpen(s: State, a: AgentAccountDto) = s.keyFor.mapC(_.contains(a.id))
@@ -72,15 +72,15 @@ def keyState(k: AgentKeyDto): String = if (k.revoked) "失効" else k.expiresAt.
 def mounted(s: State): Unit = { pageTitle("管理"); load(s) }
 
 def setUser(s: State, u: UserDto, admin: Option[Boolean], disabled: Option[Boolean]): Unit =
-  Store.report(Api.patchUnit(s"/api/admin/users/${u.id}", UpdateUserReq(admin, disabled).asJson))(_ => load(s))
+  Toasts.report(Api.patchUnit(s"/api/admin/users/${u.id}", UpdateUserReq(admin, disabled).asJson))(_ => load(s))
 
 def archive(s: State, p: ProjectDto, on: Boolean): Unit =
-  Store.report(Api.patchUnit(s"/api/projects/${p.id}", UpdateProjectReq(None, None, None, Some(on)).asJson)) { _ => load(s); Store.loadProjects() }
+  Toasts.report(Api.patchUnit(s"/api/projects/${p.id}", UpdateProjectReq(None, None, None, Some(on)).asJson)) { _ => load(s); Store.loadProjects() }
 
 def remove(s: State, p: ProjectDto): Unit = {
   Dialog.prompt(s"プロジェクト「${p.name}」とすべてのタスクを完全に削除します。元に戻せません。\n確認のためキー（${p.key}）を入力してください。", "", "完全に削除する") { k =>
-    if (k.trim.toUpperCase == p.key) Store.report(Api.delete(s"/api/projects/${p.id}")) { _ => load(s); Store.loadProjects() }
-    else Store.toast("キーが一致しないため削除しませんでした", error = true)
+    if (k.trim.toUpperCase == p.key) Toasts.report(Api.delete(s"/api/projects/${p.id}")) { _ => load(s); Store.loadProjects() }
+    else Toasts.show("キーが一致しないため削除しませんでした", error = true)
   }
 }
 
@@ -107,7 +107,7 @@ def me(u: UserDto): Boolean = Store.myId.contains(u.id)
           <thead><tr><th>名前</th><th>メール</th><th>グループ</th><th>最終ログイン</th><th>管理者</th><th>無効</th></tr></thead>
           <tbody>
             <tr v-for="u in s.users" :key="u.id">
-              <td><Avatar :user="Some(UserBrief(u.id, u.name, u.avatarUrl))" :size="22" /> {{ u.name }}</td>
+              <td><Avatar :user="Some(Person(u.id.toString, u.name, u.avatarUrl))" :size="22" /> {{ u.name }}</td>
               <td class="small">{{ u.email.getOrElse("") }}</td>
               <td class="small">{{ u.groups.mkString(", ") }}</td>
               <td class="small">{{ u.lastLoginAt.map(Fmt.ago).getOrElse("") }}</td>
